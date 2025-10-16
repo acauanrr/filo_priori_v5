@@ -28,7 +28,7 @@ class SBERTEmbedder:
     def __init__(self,
                  model_name: str = 'BAAI/bge-large-en-v1.5',
                  target_dim: Optional[int] = None,  # Mantido por compatibilidade, mas ignorado
-                 batch_size: int = 32,
+                 batch_size: int = 256,  # Increased from 32 for faster encoding
                  device: str = 'cuda'):
         """
         Args:

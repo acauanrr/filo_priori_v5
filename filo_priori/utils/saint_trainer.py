@@ -382,7 +382,8 @@ def load_saint_checkpoint(model: nn.Module, checkpoint_path: Path, device: str) 
     Returns:
         Loaded model
     """
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    # PyTorch 2.6+ requires weights_only=False for pickled objects
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     model.load_state_dict(checkpoint['model_state_dict'])
     model = model.to(device)
 
