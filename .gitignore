@@ -1,0 +1,104 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+.venv/
+
+# PyTorch models and checkpoints
+models/*.pth
+models/*.pt
+models/*.ckpt
+*.pth
+*.pt
+*.ckpt
+
+# Large datasets
+datasets/*.csv
+datasets/*.parquet
+datasets/*.feather
+data/*.csv
+data/*.parquet
+data/*.feather
+
+# Results and outputs
+results/
+outputs/
+runs/
+logs/
+*.log
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb
+
+# IDE settings
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Pytest
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# MyPy
+.mypy_cache/
+.dmypy.json
+dmypy.json
+
+# Environment variables
+.env
+.env.local
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Figures (optional - uncomment if you want to ignore generated figures)
+# figures/*.png
+# figures/*.jpg
+# figures/*.pdf
+
+# Experiment artifacts
+wandb/
+mlruns/
+lightning_logs/
+
+# Cache
+.cache/
+*.cache
+
+# OS
+Thumbs.db

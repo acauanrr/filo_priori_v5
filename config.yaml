@@ -1,0 +1,158 @@
+# Filo-Priori V5 Configuration (REFACTORED WITH BGE + SAINT)
+# Modernized: BGE-large embeddings (1024D) + SAINT transformer classifier
+
+# ============================================================================
+# SAINT Model Configuration
+# ============================================================================
+# SAINT: Self-Attention and Intersample Attention Transformer
+# A transformer-based model designed for tabular data classification
+
+saint:
+  num_continuous: 1028  # Will be auto-detected from features
+  num_categorical: 0    # Currently not using categorical features
+  categorical_dims: null
+  embedding_dim: 128    # Feature embedding dimension
+  num_layers: 6         # Number of SAINT transformer blocks
+  num_heads: 8          # Multi-head attention heads
+  mlp_hidden_dim: null  # Default: 4 * embedding_dim (512)
+  dropout: 0.1          # Dropout rate for regularization
+  use_intersample: true # Enable intersample attention (key SAINT feature)
+
+# Feature Engineering
+features:
+  # Core semantic features (UPGRADED TO BGE-LARGE)
+  use_semantic: true
+  semantic_model: "BAAI/bge-large-en-v1.5"  # CHANGED: State-of-the-art embeddings
+  semantic_dim: 1024  # CHANGED: BGE-large produces 1024D (was 768D)
+
+  # Simple temporal features (UNCHANGED)
+  use_temporal: true
+  temporal_features:
+    - "last_run"        # Binary: was it in last run?
+    - "fail_count"      # Historical fail count
+    - "avg_duration"    # Average execution time
+    - "run_frequency"   # How often it runs
+
+  total_dim: 1028  # CHANGED: 1024 semantic + 4 temporal (was 772)
+
+# ============================================================================
+# Training Configuration (SAINT requires proper training loop)
+# ============================================================================
+training:
+  num_epochs: 30
+  learning_rate: 0.0005  # Conservative learning rate for stability
+  weight_decay: 0.01     # L2 regularization
+  batch_size: 16         # Batch size for training
+  gradient_clip: 1.0     # Gradient clipping for stability
+
+  # Class imbalance handling
+  pos_weight: 5.0                    # BCE loss weight for positive class (max 5.0x)
+  use_balanced_sampler: true         # Use WeightedRandomSampler
+  target_positive_fraction: 0.20     # Target 20% positive samples per batch
+
+  # Optimizer settings
+  optimizer: "adamw"
+  betas: [0.9, 0.999]
+
+  # Learning rate schedule
+  lr_schedule: "cosine"   # Cosine annealing with warmup
+  warmup_epochs: 3        # Number of warmup epochs
+  min_lr_ratio: 0.01      # Minimum LR as ratio of initial LR
+
+  # Early stopping
+  patience: 8                # Early stopping patience
+  monitor_metric: "val_auprc"  # Metric to monitor (AUPRC best for imbalanced data)
+  validation_split: 0.15     # 15% validation split
+
+  # Loss configuration
+  loss_type: "bce"           # Binary cross-entropy
+  label_smoothing: 0.05      # Label smoothing to prevent overconfidence
+
+# Data Processing
+data:
+  train_file: "datasets/train.csv"
+  test_file: "datasets/test_full.csv"
+
+  # Filtering
+  target_test_builds: 277
+  min_tests_per_build: 1
+
+  # NO SMOTE (proven unstable in v3)
+  use_augmentation: false
+
+  # Simple duplicate removal
+  remove_duplicates: true
+
+# Inference - APFD-OPTIMIZED STRATEGIES
+inference:
+  # Strategy selection
+  strategy: "hybrid"  # Options: probability, diversity, hybrid, ensemble
+
+  # Probability-based (baseline)
+  probability:
+    use_calibration: true  # Logistic calibration
+    temperature_scaling: true
+
+  # Diversity-based (exploit test structure)
+  diversity:
+    similarity_penalty: 0.3  # Penalize similar tests
+    use_clustering: false  # Keep simple
+
+  # Hybrid (combine probability + diversity)
+  hybrid:
+    prob_weight: 0.7
+    div_weight: 0.3
+
+  # Ensemble (multiple models - future)
+  ensemble:
+    enabled: false
+    num_models: 3
+
+# Evaluation
+evaluation:
+  batch_size: 32
+  metrics:
+    - "accuracy"
+    - "precision"
+    - "recall"
+    - "f1"
+    - "auc"
+    - "auprc"
+    - "apfd"
+    - "apfdc"  # Time-weighted APFD
+
+  # Threshold optimization
+  optimize_threshold: true
+  threshold_metric: "f1"
+  threshold_range: [0.01, 0.6]
+  threshold_steps: 100
+
+  # APFD target
+  apfd_target: 0.70
+
+# Logging & Output
+logging:
+  level: "INFO"
+  log_dir: "logs"
+  save_predictions: true
+  save_probabilities: true
+
+output:
+  results_dir: "results"
+  model_dir: "models"
+  best_model: "best_model.pth"
+
+# Smoke Test Mode
+smoke:
+  train_builds: 20
+  test_builds: 10
+  epochs: 5
+
+# Memory Management
+memory:
+  cuda_memory_fraction: 0.8
+  enable_mixed_precision: true
+  gradient_accumulation_steps: 1
+
+# Reproducibility
+random_seed: 42

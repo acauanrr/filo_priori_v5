@@ -1,0 +1,676 @@
+"""
+Filo-Priori V5 - Script Orquestrador Completo (Refactored with BGE + SAINT)
+
+Executes pipeline end-to-end:
+1. Parse commits
+2. Build text_semantic
+3. Generate BGE-large embeddings (1024D, sem PCA)
+4. Build features tabulares (1024 + 4 = 1028D)
+5. Train SAINT transformer classifier (with proper training loop)
+6. Evaluate e salvar resultados
+
+Usage:
+    # Smoke test
+    python scripts/core/run_experiment_server.py --smoke-train 100 --smoke-test 50
+
+    # Full test
+    python scripts/core/run_experiment_server.py --full-test
+
+Autor: Filo-Priori V5 (Refactored with SAINT)
+"""
+
+import sys
+import os
+import argparse
+import logging
+from pathlib import Path
+import json
+import pandas as pd
+import numpy as np
+import torch
+from sklearn.model_selection import train_test_split
+from torch.utils.data import DataLoader
+
+# Add parent to path
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
+# Import modules using importlib for numbered files
+import importlib.util
+
+def load_module_from_file(file_path, module_name):
+    spec = importlib.util.spec_from_file_location(module_name, file_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+# Load data_processing modules
+base_dir = Path(__file__).parent.parent.parent
+parse_commit_module = load_module_from_file(base_dir / 'data_processing' / '01_parse_commit.py', 'parse_commit')
+text_semantic_module = load_module_from_file(base_dir / 'data_processing' / '02_build_text_semantic.py', 'build_text_semantic')
+embed_module = load_module_from_file(base_dir / 'data_processing' / '03_embed_sbert.py', 'embed_sbert')
+
+# Extract functions
+process_commits = parse_commit_module.process_commits
+process_text_semantic = text_semantic_module.process_text_semantic
+SBERTEmbedder = embed_module.SBERTEmbedder
+
+# Import utils and models
+from utils.features import FeatureBuilder
+from utils.dataset import TabularDataset, create_balanced_sampler
+from utils.saint_trainer import train_saint, load_saint_checkpoint, predict_saint, evaluate_model
+from utils.apfd_per_build import generate_apfd_report, print_apfd_summary
+from models.saint import SAINT, create_saint_model
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s')
+logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# CONFIGURATION
+# ============================================================================
+
+DEFAULT_CONFIG = {
+    'train_csv': '../datasets/train.csv',
+    'test_csv': '../datasets/test_full.csv',
+    'output_dir': '../results',
+    # BGE embeddings (sem PCA)
+    'sbert_target_dim': None,  # OBSOLETO - BGE usa 1024D nativo
+    'sbert_model': 'BAAI/bge-large-en-v1.5',  # Novo modelo de embeddings
+    # SAINT model parameters
+    'saint': {
+        'num_continuous': 1028,
+        'num_categorical': 0,
+        'categorical_dims': None,
+        'embedding_dim': 128,
+        'num_layers': 6,
+        'num_heads': 8,
+        'mlp_hidden_dim': None,  # Default: 4 * embedding_dim
+        'dropout': 0.1,
+        'use_intersample': True
+    },
+    # Training parameters
+    'training': {
+        'num_epochs': 30,
+        'learning_rate': 5e-4,
+        'weight_decay': 0.01,
+        'batch_size': 16,
+        'patience': 8,
+        'monitor_metric': 'val_auprc',
+        'warmup_epochs': 3,
+        'min_lr_ratio': 0.01,
+        'gradient_clip': 1.0,
+        'label_smoothing': 0.05,
+        'pos_weight': 5.0,  # Class imbalance weight
+        'target_positive_fraction': 0.20  # For balanced sampler
+    },
+    'seed': 42
+}
+
+
+# ============================================================================
+# HELPER FUNCTIONS
+# ============================================================================
+
+def get_next_execution_dir(base_dir):
+    """
+    Create next execution directory (execution_001, execution_002, etc.).
+
+    Args:
+        base_dir: Base results directory
+
+    Returns:
+        Path to new execution directory
+    """
+    base_path = Path(base_dir)
+    base_path.mkdir(parents=True, exist_ok=True)
+
+    # Find existing execution directories
+    existing = [d for d in base_path.iterdir() if d.is_dir() and d.name.startswith('execution_')]
+
+    if not existing:
+        next_num = 1
+    else:
+        # Extract numbers from existing directories
+        nums = []
+        for d in existing:
+            try:
+                num = int(d.name.split('_')[1])
+                nums.append(num)
+            except (IndexError, ValueError):
+                continue
+        next_num = max(nums) + 1 if nums else 1
+
+    # Create new execution directory
+    exec_dir = base_path / f'execution_{next_num:03d}'
+    exec_dir.mkdir(parents=True, exist_ok=True)
+
+    return exec_dir
+
+
+def set_seed(seed):
+    """Set random seeds for reproducibility."""
+    import random
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+def calculate_apfd(ranks, labels):
+    """
+    Calculate APFD.
+
+    Args:
+        ranks: Array of ranks (1-indexed, lower is better)
+        labels: Binary labels (1=failure, 0=pass)
+
+    Returns:
+        APFD score (0 to 1, higher is better)
+    """
+    labels_arr = np.array(labels)
+    ranks_arr = np.array(ranks)
+
+    n_tests = len(labels_arr)
+    fail_indices = np.where(labels_arr == 1.0)[0]
+    fail_count = len(fail_indices)
+
+    if n_tests == 0 or fail_count == 0:
+        return 1.0
+
+    fail_ranks = ranks_arr[fail_indices]
+    apfd = 1.0 - fail_ranks.sum() / (fail_count * n_tests) + 1.0 / (2.0 * n_tests)
+    return float(np.clip(apfd, 0.0, 1.0))
+
+
+def calculate_apfdc(ranks, labels, costs):
+    """
+    Calculate APFDc (cost-aware APFD).
+
+    Args:
+        ranks: Array of ranks (1-indexed)
+        labels: Binary labels
+        costs: Execution costs
+
+    Returns:
+        APFDc score
+    """
+    labels_arr = np.array(labels)
+    ranks_arr = np.array(ranks)
+    costs_arr = np.array(costs)
+
+    n_tests = len(labels_arr)
+    fail_indices = np.where(labels_arr == 1.0)[0]
+    fail_count = len(fail_indices)
+
+    if n_tests == 0 or fail_count == 0:
+        return 1.0
+
+    total_cost = costs_arr.sum()
+    if total_cost == 0:
+        return calculate_apfd(ranks, labels)
+
+    # Sort by rank to get execution order
+    order = np.argsort(ranks_arr)
+    ordered_costs = costs_arr[order]
+    ordered_labels = labels_arr[order]
+
+    # Cumulative costs
+    cumulative_costs = np.cumsum(ordered_costs)
+
+    # For each failure, find its cumulative cost position
+    failure_positions = cumulative_costs[ordered_labels == 1.0]
+
+    apfdc = 1.0 - failure_positions.sum() / (fail_count * total_cost) + ordered_costs[0] / (2.0 * total_cost)
+    return float(np.clip(apfdc, 0.0, 1.0))
+
+
+# ============================================================================
+# MAIN PIPELINE
+# ============================================================================
+
+def run_pipeline(args):
+    """Run complete pipeline."""
+    config = DEFAULT_CONFIG.copy()
+
+    # Update config from args
+    if hasattr(args, 'device'):
+        config['device'] = args.device
+    else:
+        config['device'] = 'cuda' if torch.cuda.is_available() else 'cpu'
+
+    set_seed(config['seed'])
+
+    # Create execution directory
+    exec_dir = get_next_execution_dir(config['output_dir'])
+
+    logger.info("="*70)
+    logger.info("FILO-PRIORI V5 - PIPELINE START (BGE + SAINT)")
+    logger.info("="*70)
+    logger.info(f"Execution directory: {exec_dir}")
+    logger.info(f"Mode: {'SMOKE TEST' if args.smoke_train else 'FULL TEST'}")
+    logger.info(f"Device: {config['device']}")
+
+    # ========================================================================
+    # STEP 1: Load and parse data
+    # ========================================================================
+    logger.info("\n[1/7] Loading and parsing commits...")
+
+    df_train = pd.read_csv(config['train_csv'])
+    df_test = pd.read_csv(config['test_csv'])
+
+    if args.smoke_train:
+        # Smoke test: limit builds
+        builds = df_train['Build_ID'].unique()[:args.smoke_train]
+        df_train = df_train[df_train['Build_ID'].isin(builds)]
+
+        builds_test = df_test['Build_ID'].unique()[:args.smoke_test]
+        df_test = df_test[df_test['Build_ID'].isin(builds_test)]
+
+    logger.info(f"Train: {len(df_train)} rows, Test: {len(df_test)} rows")
+
+    df_train = process_commits(df_train)
+    df_test = process_commits(df_test)
+
+    # ========================================================================
+    # STEP 2: Build text_semantic
+    # ========================================================================
+    logger.info("\n[2/7] Building text_semantic...")
+
+    df_train = process_text_semantic(df_train)
+    df_test = process_text_semantic(df_test)
+
+    # Remove ambiguous labels
+    df_train = df_train[df_train['label_binary'].notna()].reset_index(drop=True)
+    df_test = df_test[df_test['label_binary'].notna()].reset_index(drop=True)
+
+    logger.info(f"After filtering - Train: {len(df_train)}, Test: {len(df_test)}")
+    logger.info(f"Train failures: {df_train['label_binary'].sum():.0f} ({df_train['label_binary'].mean()*100:.2f}%)")
+    logger.info(f"Test failures: {df_test['label_binary'].sum():.0f} ({df_test['label_binary'].mean()*100:.2f}%)")
+
+    # ========================================================================
+    # STEP 3: Generate embeddings
+    # ========================================================================
+    logger.info("\n[3/7] Generating BGE embeddings...")
+
+    embedder = SBERTEmbedder(
+        model_name=config['sbert_model'],
+        target_dim=config['sbert_target_dim'],
+        device=config['device']
+    )
+
+    # Train embeddings (BGE produces 1024D directly, no PCA)
+    train_texts = df_train['text_semantic'].tolist()
+    train_emb = embedder.encode(train_texts)
+
+    embedder.fit_scaler(train_emb)
+    train_emb = embedder.transform_scaler(train_emb)
+
+    # Test embeddings
+    test_texts = df_test['text_semantic'].tolist()
+    test_emb = embedder.encode(test_texts)
+    test_emb = embedder.transform_scaler(test_emb)
+
+    logger.info(f"Embedding shape: {train_emb.shape} (expected: [N, 1024])")
+
+    # ========================================================================
+    # STEP 4: Build features
+    # ========================================================================
+    logger.info("\n[4/7] Building tabular features...")
+
+    feature_builder = FeatureBuilder()
+    train_cont, train_cat = feature_builder.fit_transform_features(df_train, train_emb)
+    test_cont, test_cat = feature_builder.transform_features(df_test, test_emb)
+
+    logger.info(f"Feature shapes - Continuous: {train_cont.shape}, Categorical: {train_cat.shape}")
+
+    # Split train/val
+    labels_train = df_train['label_binary'].values
+    indices = np.arange(len(labels_train))
+    train_idx, val_idx = train_test_split(
+        indices, test_size=0.15, stratify=labels_train, random_state=config['seed']
+    )
+
+    # Prepare datasets
+    X_train = train_cont[train_idx]
+    y_train = labels_train[train_idx]
+    X_val = train_cont[val_idx]
+    y_val = labels_train[val_idx]
+    X_test = test_cont
+    y_test = df_test['label_binary'].values
+
+    # Create PyTorch datasets
+    train_dataset = TabularDataset(X_train, train_cat[train_idx], y_train)
+    val_dataset = TabularDataset(X_val, train_cat[val_idx], y_val)
+    test_dataset = TabularDataset(X_test, test_cat, y_test)
+
+    # Create dataloaders
+    train_sampler = create_balanced_sampler(
+        y_train,
+        target_positive_fraction=config['training']['target_positive_fraction']
+    )
+
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=config['training']['batch_size'],
+        sampler=train_sampler
+    )
+
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=config['training']['batch_size'] * 2,
+        shuffle=False
+    )
+
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=config['training']['batch_size'] * 2,
+        shuffle=False
+    )
+
+    logger.info(f"Datasets - Train: {len(X_train)}, Val: {len(X_val)}, Test: {len(X_test)}")
+    logger.info(f"Feature dimension: {X_train.shape[1]} (expected: ~1028D = 1024 semantic + ~4 temporal)")
+
+    # ========================================================================
+    # STEP 5: Train SAINT model
+    # ========================================================================
+    logger.info("\n[5/7] Training SAINT transformer...")
+
+    # Update SAINT config with actual feature dimensions
+    config['saint']['num_continuous'] = X_train.shape[1]
+    config['saint']['num_categorical'] = train_cat.shape[1]
+
+    # Create SAINT model
+    model = create_saint_model(config)
+
+    # Count parameters
+    num_params = sum(p.numel() for p in model.parameters())
+    logger.info(f"SAINT model created with {num_params:,} parameters")
+
+    # Train
+    train_results = train_saint(
+        model=model,
+        train_loader=train_loader,
+        val_loader=val_loader,
+        config=config['training'],
+        device=config['device'],
+        save_dir=exec_dir
+    )
+
+    logger.info(f"Training completed. Best epoch: {train_results['best_epoch']}")
+    logger.info(f"Best {train_results['monitor_metric']}: {train_results['best_metric']:.4f}")
+
+    # ========================================================================
+    # STEP 6: Evaluate on test set
+    # ========================================================================
+    logger.info("\n[6/7] Evaluating on test set...")
+
+    # Load best model
+    model = load_saint_checkpoint(model, exec_dir / 'best_model.pth', config['device'])
+
+    # Evaluate
+    import torch.nn as nn
+    criterion = nn.BCEWithLogitsLoss()
+    test_metrics, test_labels, test_probs = evaluate_model(
+        model, test_loader, criterion, config['device']
+    )
+
+    # Add probabilities to dataframe
+    df_test['probability'] = test_probs
+
+    # Calculate ranks PER BUILD (not globally!)
+    df_test['rank'] = df_test.groupby('Build_ID')['probability'] \
+                             .rank(method='first', ascending=False) \
+                             .astype(int)
+
+    # Extract ranks array
+    ranks = df_test['rank'].values
+
+    # Calculate APFD using global ranks (for comparison with previous executions)
+    apfd = calculate_apfd(ranks, df_test['label_binary'].values)
+
+    # Calculate APFDc if TE_Duration available
+    if 'TE_Duration' in df_test.columns:
+        costs = df_test['TE_Duration'].fillna(df_test['TE_Duration'].median()).values
+        apfdc = calculate_apfdc(ranks, df_test['label_binary'].values, costs)
+    else:
+        apfdc = apfd
+
+    logger.info("="*70)
+    logger.info("TEST RESULTS")
+    logger.info("="*70)
+    logger.info(f"APFD:      {apfd:.4f}")
+    logger.info(f"APFDc:     {apfdc:.4f}")
+    logger.info(f"AUPRC:     {test_metrics['auprc']:.4f}")
+    logger.info(f"Precision: {test_metrics['precision']:.4f}")
+    logger.info(f"Recall:    {test_metrics['recall']:.4f}")
+    logger.info(f"F1:        {test_metrics['f1']:.4f}")
+    logger.info(f"Accuracy:  {test_metrics['accuracy']:.4f}")
+
+    # Probability analysis
+    fail_probs = test_probs[df_test['label_binary'].values == 1.0]
+    pass_probs = test_probs[df_test['label_binary'].values == 0.0]
+
+    discrimination_ratio = fail_probs.mean() / pass_probs.mean() if pass_probs.mean() > 0 else 0
+
+    logger.info("\n" + "="*70)
+    logger.info("PROBABILITY ANALYSIS")
+    logger.info("="*70)
+    logger.info(f"Failures: mean={fail_probs.mean():.6f}, std={fail_probs.std():.6f}")
+    logger.info(f"Passes:   mean={pass_probs.mean():.6f}, std={pass_probs.std():.6f}")
+    logger.info(f"Discrimination ratio: {discrimination_ratio:.4f}x")
+
+    # ========================================================================
+    # STEP 7: Save results
+    # ========================================================================
+    logger.info("\n[7/7] Saving results...")
+
+    # Prepare metadata
+    import datetime
+    metadata = {
+        'experiment_type': 'smoke_test' if args.smoke_train else 'full_test',
+        'timestamp': datetime.datetime.now().isoformat(),
+        'n_train_builds': args.smoke_train if args.smoke_train else 'all',
+        'n_test_builds': args.smoke_test if args.smoke_test else 'all',
+        'model_type': 'SAINT',
+        'embedding_model': config['sbert_model'],
+        'embedding_dim': 1024,
+        'model_params': num_params,
+        'device': config['device'],
+        'dataset_stats': {
+            'train_total': len(df_train),
+            'train_failures': int(df_train['label_binary'].sum()),
+            'train_failure_rate': float(df_train['label_binary'].mean()),
+            'val_total': len(X_val),
+            'test_total': len(df_test),
+            'test_failures': int(df_test['label_binary'].sum()),
+            'test_failure_rate': float(df_test['label_binary'].mean())
+        }
+    }
+
+    results = {
+        'metadata': metadata,
+        'metrics': {
+            'apfd': apfd,
+            'apfdc': apfdc,
+            'discrimination_ratio': discrimination_ratio,
+            **test_metrics
+        },
+        'training': train_results,
+        'config': {
+            'saint': config['saint'],
+            'training': config['training'],
+            'seed': config['seed']
+        },
+        'probability_stats': {
+            'failures_mean': float(fail_probs.mean()),
+            'failures_std': float(fail_probs.std()),
+            'failures_min': float(fail_probs.min()),
+            'failures_max': float(fail_probs.max()),
+            'passes_mean': float(pass_probs.mean()),
+            'passes_std': float(pass_probs.std()),
+            'passes_min': float(pass_probs.min()),
+            'passes_max': float(pass_probs.max())
+        }
+    }
+
+    # Save metrics.json
+    with open(exec_dir / 'metrics.json', 'w') as f:
+        json.dump(results, f, indent=2, default=float)
+
+    # Calculate priority_score and diversity_score for hybrid strategy
+    df_test['diversity_score'] = 0.0  # Placeholder for now
+    df_test['priority_score'] = 0.7 * df_test['probability'] + 0.3 * df_test['diversity_score']
+
+    # Save detailed predictions
+    output_cols = ['Build_ID', 'TC_Key', 'TE_Test_Result', 'label_binary',
+                   'probability', 'diversity_score', 'priority_score', 'rank']
+    df_test[output_cols].to_csv(exec_dir / 'prioritized_hybrid.csv', index=False)
+
+    # Generate APFD per-build report
+    logger.info("\nGenerating APFD per-build report...")
+    apfd_results_df, apfd_summary = generate_apfd_report(
+        df_test,
+        method_name="filo_priori_v5_saint",
+        test_scenario='smoke_test' if args.smoke_train else 'full_test',
+        output_path=exec_dir / 'apfd_per_build.csv'
+    )
+    print_apfd_summary(apfd_summary)
+
+    # Add to results dict and re-save metrics.json with APFD summary
+    results['apfd_per_build_summary'] = apfd_summary
+    with open(exec_dir / 'metrics.json', 'w') as f:
+        json.dump(results, f, indent=2, default=float)
+
+    # Save config as separate file
+    with open(exec_dir / 'config.json', 'w') as f:
+        json.dump({
+            'saint': config['saint'],
+            'training': config['training'],
+            'seed': config['seed']
+        }, f, indent=2, default=str)
+
+    # Save training history
+    with open(exec_dir / 'training_history.json', 'w') as f:
+        json.dump(train_results['history'], f, indent=2, default=float)
+
+    # Save feature artifacts
+    feature_builder.save(exec_dir / 'feature_builder.pkl')
+    embedder.save_artifacts(exec_dir / 'embedder')
+
+    # Create summary report
+    summary = f"""
+FILO-PRIORI V5 - EXPERIMENT SUMMARY (BGE + SAINT)
+{'='*70}
+
+Execution Directory: {exec_dir.name}
+Timestamp: {metadata['timestamp']}
+Mode: {metadata['experiment_type'].upper()}
+
+MODEL
+-----
+Embeddings: {metadata['embedding_model']} ({metadata['embedding_dim']}D)
+Classifier: SAINT Transformer ({metadata['model_params']:,} parameters)
+  - Embedding dim: {config['saint']['embedding_dim']}
+  - Layers: {config['saint']['num_layers']}
+  - Heads: {config['saint']['num_heads']}
+  - Intersample attention: {config['saint']['use_intersample']}
+Features: {X_train.shape[1]}D (1024 semantic + ~4 temporal)
+
+DATASET
+-------
+Train: {metadata['dataset_stats']['train_total']} samples, {metadata['dataset_stats']['train_failures']} failures ({metadata['dataset_stats']['train_failure_rate']*100:.2f}%)
+Val:   {metadata['dataset_stats']['val_total']} samples
+Test:  {metadata['dataset_stats']['test_total']} samples, {metadata['dataset_stats']['test_failures']} failures ({metadata['dataset_stats']['test_failure_rate']*100:.2f}%)
+
+TRAINING
+--------
+Best Epoch: {train_results['best_epoch']}
+Best {train_results['monitor_metric']}: {train_results['best_metric']:.4f}
+Total Epochs: {len(train_results['history']['train_loss'])}
+
+TEST RESULTS
+------------
+APFD:      {apfd:.4f}
+APFDc:     {apfdc:.4f}
+AUPRC:     {test_metrics['auprc']:.4f}
+Precision: {test_metrics['precision']:.4f}
+Recall:    {test_metrics['recall']:.4f}
+F1:        {test_metrics['f1']:.4f}
+Accuracy:  {test_metrics['accuracy']:.4f}
+
+PROBABILITY ANALYSIS
+--------------------
+Failures: mean={fail_probs.mean():.6f}, std={fail_probs.std():.6f}
+Passes:   mean={pass_probs.mean():.6f}, std={pass_probs.std():.6f}
+Discrimination: {discrimination_ratio:.4f}x
+
+FILES SAVED
+-----------
+- metrics.json              : Complete metrics and results
+- config.json               : Experiment configuration
+- best_model.pth            : Trained SAINT model (best checkpoint)
+- training_history.json     : Per-epoch training metrics
+- prioritized_hybrid.csv    : Test predictions with ranks
+- apfd_per_build.csv        : APFD calculated per build
+- feature_builder.pkl       : Feature engineering artifacts
+- embedder/                 : BGE embedder artifacts (scaler only, no PCA)
+- summary.txt               : This summary
+
+{'='*70}
+"""
+
+    with open(exec_dir / 'summary.txt', 'w') as f:
+        f.write(summary)
+
+    logger.info(f"\nResults saved to {exec_dir}/")
+    logger.info("  - metrics.json")
+    logger.info("  - config.json")
+    logger.info("  - best_model.pth")
+    logger.info("  - training_history.json")
+    logger.info("  - prioritized_hybrid.csv")
+    logger.info("  - apfd_per_build.csv")
+    logger.info("  - feature_builder.pkl")
+    logger.info("  - embedder/")
+    logger.info("  - summary.txt")
+
+    logger.info("\n" + "="*70)
+    logger.info("PIPELINE COMPLETED SUCCESSFULLY!")
+    logger.info(f"Results directory: {exec_dir}")
+    logger.info("="*70)
+
+
+# ============================================================================
+# CLI
+# ============================================================================
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description='Filo-Priori V5 Pipeline (BGE + SAINT)')
+
+    parser.add_argument('--smoke-train', type=int, help='Smoke test: number of train builds')
+    parser.add_argument('--smoke-test', type=int, help='Smoke test: number of test builds')
+    parser.add_argument('--full-test', action='store_true', help='Run full test')
+
+    parser.add_argument('--output-dir', default='results', help='Output directory')
+    parser.add_argument('--device', default='auto', help='Device: cuda/cpu/auto')
+
+    args = parser.parse_args()
+
+    # Validate
+    if not (args.smoke_train or args.full_test):
+        parser.error("Must specify either --smoke-train or --full-test")
+
+    if args.smoke_train and not args.smoke_test:
+        parser.error("--smoke-test required when using --smoke-train")
+
+    # Convert 'auto' device to actual device
+    if args.device == 'auto':
+        args.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        logger.info(f"Device auto-selected: {args.device}")
+
+    # Run
+    try:
+        run_pipeline(args)
+    except Exception as e:
+        logger.error(f"Pipeline failed: {e}", exc_info=True)
+        sys.exit(1)

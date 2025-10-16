@@ -1,0 +1,51 @@
+flowchart TD
+    Start([Start Experiment]) --> Step1[**STEP 1/7**<br/>Load & Parse Commits]
+
+    %% Step 1: Load and Parse Commits
+    Step1 --> FilterBuilds[Filter Valid Builds<br/>≥1 failure required]
+    FilterBuilds --> SplitData[Train/Val/Test Split<br/>85% / 15% / test]
+
+    %% Step 2: Build Text Semantic
+    SplitData --> Step2[**STEP 2/7**<br/>Build Text Semantic]
+    Step2 --> ProcessText[Concatenate & Clean Text<br/>TE_Summary + TC_Steps]
+
+    %% Step 3: Generate BGE Embeddings (UPDATED)
+    ProcessText --> Step3[**STEP 3/7**<br/>Generate BGE Embeddings]
+    Step3 --> EmbedText[Encode with BGE-large<br/>BAAI/bge-large-en-v1.5]
+    EmbedText --> ScaleEmbed[Apply StandardScaler<br/>1024D → 1024D<br/>**NO PCA**]
+
+    %% Step 4: Build Tabular Features
+    ScaleEmbed --> Step4[**STEP 4/7**<br/>Build Tabular Features]
+    Step4 --> BuildTemporal[Build Temporal Features<br/>4 features:<br/>last_run, fail_count,<br/>avg_duration, run_frequency]
+    BuildTemporal --> ConcatFeatures[Concatenate:<br/>BGE 1024D + Temporal 4D<br/>= 1028D total]
+
+    %% Step 5: Train SAINT Transformer (UPDATED)
+    ConcatFeatures --> Step5[**STEP 5/7**<br/>Train SAINT Transformer]
+    Step5 --> InitModel[Initialize SAINT Model<br/>6 layers, 8 heads<br/>Embedding: 128D<br/>Intersample Attention: ON<br/>~1.86M parameters]
+    InitModel --> TrainLoop[Training Loop<br/>BCE Loss + pos_weight=5<br/>AdamW optimizer<br/>Cosine LR schedule<br/>Early Stopping patience=8]
+    TrainLoop --> LoadBestModel[Load Best Model<br/>based on Val AUPRC]
+
+    %% Step 6: Evaluate Model
+    LoadBestModel --> Step6[**STEP 6/7**<br/>Evaluate Model]
+    Step6 --> Predict[Generate Predictions<br/>Test builds]
+    Predict --> CalcRanksPERBUILD[**Calculate Ranks PER BUILD**<br/>groupby Build_ID]
+    CalcRanksPERBUILD --> CalcMetrics[Calculate Metrics<br/>Precision, Recall, AUPRC,<br/>F1, Accuracy]
+    CalcMetrics --> CalcAPFDPerBuild[Calculate APFD Per Build<br/>with Business Rules]
+    CalcAPFDPerBuild --> AggregateAPFD[Aggregate APFD Stats<br/>Mean, Median, Distribution]
+
+    %% Step 7: Save Results
+    AggregateAPFD --> Step7[**STEP 7/7**<br/>Save Results]
+    Step7 --> SaveOutputs[Save Outputs:<br/>• metrics.json<br/>• best_model.pth<br/>• training_history.json<br/>• prioritized_hybrid.csv<br/>• apfd_per_build.csv<br/>• summary.txt]
+    SaveOutputs --> End([Experiment Complete])
+
+    %% Styling
+    classDef stepClass fill:#4A90E2,stroke:#2E5C8A,stroke-width:2px,color:#fff
+    classDef dataClass fill:#50C878,stroke:#2E7D4E,stroke-width:2px,color:#fff
+    classDef processClass fill:#FFB84D,stroke:#CC8A3D,stroke-width:2px,color:#000
+    classDef criticalClass fill:#9B59B6,stroke:#6C3483,stroke-width:3px,color:#fff
+    classDef newClass fill:#E74C3C,stroke:#C0392B,stroke-width:3px,color:#fff
+
+    class Step1,Step2,Step3,Step4,Step5,Step6,Step7 stepClass
+    class FilterBuilds,SplitData,Predict,SaveOutputs dataClass
+    class ProcessText,EmbedText,ScaleEmbed,BuildTemporal,ConcatFeatures,InitModel,TrainLoop,LoadBestModel,CalcMetrics processClass
+    class CalcRanksPERBUILD,CalcAPFDPerBuild,AggregateAPFD criticalClass
