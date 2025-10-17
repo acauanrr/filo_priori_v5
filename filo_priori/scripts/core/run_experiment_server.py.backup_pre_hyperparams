@@ -85,23 +85,23 @@ DEFAULT_CONFIG = {
         'num_layers': 6,
         'num_heads': 8,
         'mlp_hidden_dim': None,  # Default: 4 * embedding_dim
-        'dropout': 0.2,  # ⬆️ Increased from 0.1 to reduce overfitting
+        'dropout': 0.1,
         'use_intersample': True
     },
     # Training parameters
     'training': {
         'num_epochs': 30,
-        'learning_rate': 3e-4,  # ⬇️ Reduced from 5e-4 for smoother convergence
-        'weight_decay': 0.05,  # ⬆️ Increased from 0.01 for better regularization
+        'learning_rate': 5e-4,
+        'weight_decay': 0.01,
         'batch_size': 16,
-        'patience': 5,  # ⬇️ Reduced from 8 to stop before extreme overfitting
+        'patience': 8,
         'monitor_metric': 'val_auprc',
         'warmup_epochs': 3,
         'min_lr_ratio': 0.01,
         'gradient_clip': 1.0,
-        'label_smoothing': 0.01,  # ⬇️ Reduced from 0.05 to preserve signal with few failures
-        'pos_weight': 10.0,  # ⬆️ Increased from 5.0 (imbalance ratio is ~27:1)
-        'target_positive_fraction': 0.30  # ⬆️ Increased from 0.20 for more exposure to failures
+        'label_smoothing': 0.05,
+        'pos_weight': 5.0,  # Class imbalance weight
+        'target_positive_fraction': 0.20  # For balanced sampler
     },
     'seed': 42
 }
