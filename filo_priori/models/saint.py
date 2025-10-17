@@ -25,7 +25,7 @@ class EmbeddingLayer(nn.Module):
     """
     Embedding layer for mixed continuous and categorical features.
 
-    For tabular data with mostly continuous features (like our 1028D input),
+    For tabular data with mostly continuous features (like our 1024D input),
     we use a linear projection to create embeddings.
     """
 
@@ -36,7 +36,7 @@ class EmbeddingLayer(nn.Module):
                  categorical_dims: Optional[list] = None):
         """
         Args:
-            num_continuous: Number of continuous features (1028 in our case)
+            num_continuous: Number of continuous features (1024 in our case - semantic only)
             num_categorical: Number of categorical features (0 in our case)
             embedding_dim: Dimension of embeddings
             categorical_dims: List of cardinalities for each categorical feature
@@ -315,7 +315,7 @@ class SAINT(nn.Module):
                  num_classes: int = 1):
         """
         Args:
-            num_continuous: Number of continuous features (1028 in our case)
+            num_continuous: Number of continuous features (1024 in our case - semantic only)
             num_categorical: Number of categorical features
             categorical_dims: List of cardinalities for categorical features
             embedding_dim: Dimension of feature embeddings
@@ -404,7 +404,7 @@ def create_saint_model(config: dict) -> SAINT:
     model_config = config.get('saint', {})
 
     model = SAINT(
-        num_continuous=model_config.get('num_continuous', 1028),
+        num_continuous=model_config.get('num_continuous', 1024),  # ✨ CHANGED: 1024 (semantic only, no temporal)
         num_categorical=model_config.get('num_categorical', 0),
         categorical_dims=model_config.get('categorical_dims', None),
         embedding_dim=model_config.get('embedding_dim', 128),
@@ -425,7 +425,7 @@ if __name__ == "__main__":
 
     # Create dummy data
     batch_size = 16
-    num_continuous = 1028
+    num_continuous = 1024  # Semantic-only features
 
     x_continuous = torch.randn(batch_size, num_continuous)
 

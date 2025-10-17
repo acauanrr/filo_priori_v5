@@ -5,7 +5,7 @@ Executes pipeline end-to-end:
 1. Parse commits
 2. Build text_semantic
 3. Generate BGE-large embeddings (1024D, sem PCA)
-4. Build features tabulares (1024 + 4 = 1028D)
+4. Build features tabulares (1024D semantic only - NO temporal features)
 5. Train SAINT transformer classifier (with proper training loop)
 6. Evaluate e salvar resultados
 
@@ -59,6 +59,7 @@ from utils.features import FeatureBuilder
 from utils.dataset import TabularDataset, create_balanced_sampler
 from utils.saint_trainer import train_saint, load_saint_checkpoint, predict_saint, evaluate_model
 from utils.apfd_per_build import generate_apfd_report, print_apfd_summary
+from utils.calibration import ProbabilityCalibrator
 from models.saint import SAINT, create_saint_model
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s')
@@ -78,30 +79,32 @@ DEFAULT_CONFIG = {
     'sbert_model': 'BAAI/bge-large-en-v1.5',  # Novo modelo de embeddings
     # SAINT model parameters
     'saint': {
-        'num_continuous': 1028,
+        'num_continuous': 1024,  # ✨ CHANGED: 1024D (semantic only, no temporal)
         'num_categorical': 0,
         'categorical_dims': None,
-        'embedding_dim': 128,
-        'num_layers': 6,
+        'embedding_dim': 96,  # ⬇️ Reduced from 128 to 96 (less overfitting)
+        'num_layers': 4,  # ⬇️ Reduced from 6 to 4 (simpler model)
         'num_heads': 8,
         'mlp_hidden_dim': None,  # Default: 4 * embedding_dim
-        'dropout': 0.2,  # ⬆️ Increased from 0.1 to reduce overfitting
+        'dropout': 0.3,  # ⬆️ Increased from 0.2 to 0.3 (stronger regularization)
         'use_intersample': True
     },
     # Training parameters
     'training': {
         'num_epochs': 30,
-        'learning_rate': 3e-4,  # ⬇️ Reduced from 5e-4 for smoother convergence
-        'weight_decay': 0.05,  # ⬆️ Increased from 0.01 for better regularization
+        'learning_rate': 3e-4,  # Conservative LR for stability
+        'weight_decay': 0.1,  # ⬆️ Increased from 0.05 to 0.1 (stronger regularization)
         'batch_size': 16,
-        'patience': 5,  # ⬇️ Reduced from 8 to stop before extreme overfitting
+        'patience': 3,  # ⬇️ Reduced from 5 to 3 (more aggressive early stopping)
+        'min_delta': 0.01,  # ✨ NEW: Minimum improvement threshold
         'monitor_metric': 'val_auprc',
         'warmup_epochs': 3,
         'min_lr_ratio': 0.01,
         'gradient_clip': 1.0,
-        'label_smoothing': 0.01,  # ⬇️ Reduced from 0.05 to preserve signal with few failures
-        'pos_weight': 10.0,  # ⬆️ Increased from 5.0 (imbalance ratio is ~27:1)
-        'target_positive_fraction': 0.30  # ⬆️ Increased from 0.20 for more exposure to failures
+        'label_smoothing': 0.01,  # Preserve signal with few failures
+        'pos_weight': 15.0,  # ⬆️ Increased from 10.0 to 15.0 (stronger focus on failures)
+        'target_positive_fraction': 0.40,  # ⬆️ Increased from 0.30 to 0.40 (more exposure to failures)
+        'use_calibration': True  # ✨ NEW: Enable probability calibration
     },
     'seed': 42
 }
@@ -377,7 +380,7 @@ def run_pipeline(args):
     )
 
     logger.info(f"Datasets - Train: {len(X_train)}, Val: {len(X_val)}, Test: {len(X_test)}")
-    logger.info(f"Feature dimension: {X_train.shape[1]} (expected: ~1028D = 1024 semantic + ~4 temporal)")
+    logger.info(f"Feature dimension: {X_train.shape[1]} (expected: 1024D semantic only - NO temporal)")
 
     # ========================================================================
     # STEP 5: Train SAINT model
@@ -409,12 +412,44 @@ def run_pipeline(args):
     logger.info(f"Best {train_results['monitor_metric']}: {train_results['best_metric']:.4f}")
 
     # ========================================================================
-    # STEP 6: Evaluate on test set
+    # STEP 6: Calibrate probabilities (if enabled)
     # ========================================================================
-    logger.info("\n[6/7] Evaluating on test set...")
+    use_calibration = config['training'].get('use_calibration', False)
 
-    # Load best model
-    model = load_saint_checkpoint(model, exec_dir / 'best_model.pth', config['device'])
+    if use_calibration:
+        logger.info("\n[6a/7] Calibrating probabilities on validation set...")
+
+        # Load best model
+        model = load_saint_checkpoint(model, exec_dir / 'best_model.pth', config['device'])
+
+        # Get validation probabilities for calibration
+        import torch.nn as nn
+        criterion = nn.BCEWithLogitsLoss()
+        val_metrics, val_labels, val_probs = evaluate_model(
+            model, val_loader, criterion, config['device']
+        )
+
+        # Fit calibrator
+        calibrator = ProbabilityCalibrator(method='isotonic')
+        calibrator.fit(val_probs, val_labels)
+
+        # Save calibrator
+        calibrator.save(exec_dir / 'calibrator.pkl')
+
+        logger.info(f"✓ Calibrator fitted and saved")
+
+    else:
+        logger.info("\n[6a/7] Skipping calibration (disabled in config)")
+        calibrator = None
+
+    # ========================================================================
+    # STEP 7: Evaluate on test set
+    # ========================================================================
+    logger.info("\n[6b/7] Evaluating on test set...")
+
+    # Load best model (if not already loaded)
+    if not use_calibration:
+        model = load_saint_checkpoint(model, exec_dir / 'best_model.pth', config['device'])
 
     # Evaluate
     import torch.nn as nn
@@ -422,6 +457,17 @@ def run_pipeline(args):
     test_metrics, test_labels, test_probs = evaluate_model(
         model, test_loader, criterion, config['device']
     )
+
+    # Apply calibration if enabled
+    if use_calibration and calibrator is not None:
+        logger.info("Applying calibration to test probabilities...")
+        test_probs_raw = test_probs.copy()
+        test_probs = calibrator.transform(test_probs)
+
+        # Log impact
+        disc_raw = test_probs_raw[test_labels == 1].mean() / test_probs_raw[test_labels == 0].mean()
+        disc_cal = test_probs[test_labels == 1].mean() / test_probs[test_labels == 0].mean()
+        logger.info(f"Discrimination: {disc_raw:.4f}x → {disc_cal:.4f}x ({(disc_cal-disc_raw)/disc_raw*100:+.1f}%)")
 
     # Add probabilities to dataframe
     df_test['probability'] = test_probs
@@ -431,29 +477,15 @@ def run_pipeline(args):
                              .rank(method='first', ascending=False) \
                              .astype(int)
 
-    # Extract ranks array
-    ranks = df_test['rank'].values
-
-    # Calculate APFD using global ranks (for comparison with previous executions)
-    apfd = calculate_apfd(ranks, df_test['label_binary'].values)
-
-    # Calculate APFDc if TE_Duration available
-    if 'TE_Duration' in df_test.columns:
-        costs = df_test['TE_Duration'].fillna(df_test['TE_Duration'].median()).values
-        apfdc = calculate_apfdc(ranks, df_test['label_binary'].values, costs)
-    else:
-        apfdc = apfd
-
     logger.info("="*70)
-    logger.info("TEST RESULTS")
+    logger.info("TEST RESULTS (Classification)")
     logger.info("="*70)
-    logger.info(f"APFD:      {apfd:.4f}")
-    logger.info(f"APFDc:     {apfdc:.4f}")
     logger.info(f"AUPRC:     {test_metrics['auprc']:.4f}")
     logger.info(f"Precision: {test_metrics['precision']:.4f}")
     logger.info(f"Recall:    {test_metrics['recall']:.4f}")
     logger.info(f"F1:        {test_metrics['f1']:.4f}")
     logger.info(f"Accuracy:  {test_metrics['accuracy']:.4f}")
+    logger.info(f"AUC:       {test_metrics['auc']:.4f}")
 
     # Probability analysis
     fail_probs = test_probs[df_test['label_binary'].values == 1.0]
@@ -481,6 +513,41 @@ def run_pipeline(args):
 
     logger.info(f"Saving results to: {exec_dir.resolve()}")
 
+    # Calculate priority_score and diversity_score for hybrid strategy
+    df_test['diversity_score'] = 0.0  # Placeholder for now
+    df_test['priority_score'] = 0.7 * df_test['probability'] + 0.3 * df_test['diversity_score']
+
+    # Save detailed predictions
+    output_cols = ['Build_ID', 'TC_Key', 'TE_Test_Result', 'label_binary',
+                   'probability', 'diversity_score', 'priority_score', 'rank']
+    csv_path = exec_dir / 'prioritized_hybrid.csv'
+    logger.info(f"Saving prioritized_hybrid.csv to {csv_path.resolve()}")
+    df_test[output_cols].to_csv(csv_path, index=False)
+    if not csv_path.exists():
+        raise RuntimeError(f"Failed to save prioritized_hybrid.csv to {csv_path}")
+    logger.info(f"✅ prioritized_hybrid.csv saved ({csv_path.stat().st_size} bytes)")
+
+    # Generate APFD per-build report FIRST (before creating metrics.json)
+    logger.info("\nGenerating APFD per-build report...")
+    apfd_results_df, apfd_summary = generate_apfd_report(
+        df_test,
+        method_name="filo_priori_v5_saint",
+        test_scenario='smoke_test' if args.smoke_train else 'full_test',
+        output_path=exec_dir / 'apfd_per_build.csv'
+    )
+    print_apfd_summary(apfd_summary)
+
+    # Log APFD results
+    logger.info("\n" + "="*70)
+    logger.info("TEST RESULTS (Prioritization)")
+    logger.info("="*70)
+    logger.info(f"Mean APFD:   {apfd_summary['mean_apfd']:.4f}")
+    logger.info(f"Median APFD: {apfd_summary['median_apfd']:.4f}")
+    logger.info(f"Std APFD:    {apfd_summary['std_apfd']:.4f}")
+    logger.info(f"Min APFD:    {apfd_summary['min_apfd']:.4f}")
+    logger.info(f"Max APFD:    {apfd_summary['max_apfd']:.4f}")
+    logger.info(f"Builds with APFD ≥ 0.7: {apfd_summary['builds_apfd_gte_0.7']}/{apfd_summary['total_builds']} ({apfd_summary['builds_apfd_gte_0.7']/apfd_summary['total_builds']*100:.1f}%)")
+
     # Prepare metadata
     import datetime
     metadata = {
@@ -504,14 +571,14 @@ def run_pipeline(args):
         }
     }
 
+    # Build consolidated results with APFD summary included
     results = {
         'metadata': metadata,
         'metrics': {
-            'apfd': apfd,
-            'apfdc': apfdc,
             'discrimination_ratio': discrimination_ratio,
             **test_metrics
         },
+        'apfd_per_build_summary': apfd_summary,
         'training': train_results,
         'config': {
             'saint': config['saint'],
@@ -532,41 +599,12 @@ def run_pipeline(args):
 
     # Save metrics.json
     metrics_path = exec_dir / 'metrics.json'
-    logger.info(f"Saving metrics.json to {metrics_path.resolve()}")
+    logger.info(f"\nSaving metrics.json to {metrics_path.resolve()}")
     with open(metrics_path, 'w') as f:
         json.dump(results, f, indent=2, default=float)
     if not metrics_path.exists():
         raise RuntimeError(f"Failed to save metrics.json to {metrics_path}")
     logger.info(f"✅ metrics.json saved ({metrics_path.stat().st_size} bytes)")
-
-    # Calculate priority_score and diversity_score for hybrid strategy
-    df_test['diversity_score'] = 0.0  # Placeholder for now
-    df_test['priority_score'] = 0.7 * df_test['probability'] + 0.3 * df_test['diversity_score']
-
-    # Save detailed predictions
-    output_cols = ['Build_ID', 'TC_Key', 'TE_Test_Result', 'label_binary',
-                   'probability', 'diversity_score', 'priority_score', 'rank']
-    csv_path = exec_dir / 'prioritized_hybrid.csv'
-    logger.info(f"Saving prioritized_hybrid.csv to {csv_path.resolve()}")
-    df_test[output_cols].to_csv(csv_path, index=False)
-    if not csv_path.exists():
-        raise RuntimeError(f"Failed to save prioritized_hybrid.csv to {csv_path}")
-    logger.info(f"✅ prioritized_hybrid.csv saved ({csv_path.stat().st_size} bytes)")
-
-    # Generate APFD per-build report
-    logger.info("\nGenerating APFD per-build report...")
-    apfd_results_df, apfd_summary = generate_apfd_report(
-        df_test,
-        method_name="filo_priori_v5_saint",
-        test_scenario='smoke_test' if args.smoke_train else 'full_test',
-        output_path=exec_dir / 'apfd_per_build.csv'
-    )
-    print_apfd_summary(apfd_summary)
-
-    # Add to results dict and re-save metrics.json with APFD summary
-    results['apfd_per_build_summary'] = apfd_summary
-    with open(exec_dir / 'metrics.json', 'w') as f:
-        json.dump(results, f, indent=2, default=float)
 
     # Save config as separate file
     with open(exec_dir / 'config.json', 'w') as f:
@@ -601,7 +639,7 @@ Classifier: SAINT Transformer ({metadata['model_params']:,} parameters)
   - Layers: {config['saint']['num_layers']}
   - Heads: {config['saint']['num_heads']}
   - Intersample attention: {config['saint']['use_intersample']}
-Features: {X_train.shape[1]}D (1024 semantic + ~4 temporal)
+Features: {X_train.shape[1]}D (1024 semantic only - NO temporal)
 
 DATASET
 -------
@@ -615,15 +653,27 @@ Best Epoch: {train_results['best_epoch']}
 Best {train_results['monitor_metric']}: {train_results['best_metric']:.4f}
 Total Epochs: {len(train_results['history']['train_loss'])}
 
-TEST RESULTS
-------------
-APFD:      {apfd:.4f}
-APFDc:     {apfdc:.4f}
+TEST RESULTS (Classification)
+------------------------------
 AUPRC:     {test_metrics['auprc']:.4f}
 Precision: {test_metrics['precision']:.4f}
 Recall:    {test_metrics['recall']:.4f}
 F1:        {test_metrics['f1']:.4f}
 Accuracy:  {test_metrics['accuracy']:.4f}
+AUC:       {test_metrics['auc']:.4f}
+
+TEST RESULTS (Prioritization)
+------------------------------
+Mean APFD:   {apfd_summary['mean_apfd']:.4f}
+Median APFD: {apfd_summary['median_apfd']:.4f}
+Std APFD:    {apfd_summary['std_apfd']:.4f}
+Min APFD:    {apfd_summary['min_apfd']:.4f}
+Max APFD:    {apfd_summary['max_apfd']:.4f}
+
+APFD Distribution (across {apfd_summary['total_builds']} builds):
+  - Builds with APFD = 1.0:  {apfd_summary['builds_apfd_1.0']} ({apfd_summary['builds_apfd_1.0']/apfd_summary['total_builds']*100:.1f}%)
+  - Builds with APFD ≥ 0.7:  {apfd_summary['builds_apfd_gte_0.7']} ({apfd_summary['builds_apfd_gte_0.7']/apfd_summary['total_builds']*100:.1f}%)
+  - Builds with APFD < 0.5:  {apfd_summary['builds_apfd_lt_0.5']} ({apfd_summary['builds_apfd_lt_0.5']/apfd_summary['total_builds']*100:.1f}%)
 
 PROBABILITY ANALYSIS
 --------------------

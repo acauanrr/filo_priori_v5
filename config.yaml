@@ -8,14 +8,14 @@
 # A transformer-based model designed for tabular data classification
 
 saint:
-  num_continuous: 1028  # Will be auto-detected from features
+  num_continuous: 1024  # ✨ CHANGED: 1024D (semantic only, no temporal)
   num_categorical: 0    # Currently not using categorical features
   categorical_dims: null
-  embedding_dim: 128    # Feature embedding dimension
-  num_layers: 6         # Number of SAINT transformer blocks
+  embedding_dim: 96     # ⬇️ REDUCED from 128 to 96 (less overfitting)
+  num_layers: 4         # ⬇️ REDUCED from 6 to 4 (simpler model, faster convergence)
   num_heads: 8          # Multi-head attention heads
-  mlp_hidden_dim: null  # Default: 4 * embedding_dim (512)
-  dropout: 0.1          # Dropout rate for regularization
+  mlp_hidden_dim: null  # Default: 4 * embedding_dim (384 now)
+  dropout: 0.3          # ⬆️ INCREASED from 0.1 to 0.3 (stronger regularization)
   use_intersample: true # Enable intersample attention (key SAINT feature)
 
 # Feature Engineering
@@ -25,30 +25,30 @@ features:
   semantic_model: "BAAI/bge-large-en-v1.5"  # CHANGED: State-of-the-art embeddings
   semantic_dim: 1024  # CHANGED: BGE-large produces 1024D (was 768D)
 
-  # Simple temporal features (UNCHANGED)
-  use_temporal: true
+  # Temporal features (DISABLED - semantic-only experiment)
+  use_temporal: false  # ✨ DISABLED: Testing semantic-only features
   temporal_features:
     - "last_run"        # Binary: was it in last run?
     - "fail_count"      # Historical fail count
     - "avg_duration"    # Average execution time
     - "run_frequency"   # How often it runs
 
-  total_dim: 1028  # CHANGED: 1024 semantic + 4 temporal (was 772)
+  total_dim: 1024  # ✨ CHANGED: 1024 semantic only (no temporal)
 
 # ============================================================================
 # Training Configuration (SAINT requires proper training loop)
 # ============================================================================
 training:
   num_epochs: 30
-  learning_rate: 0.0005  # Conservative learning rate for stability
-  weight_decay: 0.01     # L2 regularization
+  learning_rate: 0.0003  # ⬇️ REDUCED from 0.0005 for smoother convergence
+  weight_decay: 0.1      # ⬆️ INCREASED from 0.01 for stronger regularization
   batch_size: 16         # Batch size for training
   gradient_clip: 1.0     # Gradient clipping for stability
 
   # Class imbalance handling
-  pos_weight: 5.0                    # BCE loss weight for positive class (max 5.0x)
+  pos_weight: 15.0                   # ⬆️ INCREASED from 5.0 to 15.0 (stronger focus on failures)
   use_balanced_sampler: true         # Use WeightedRandomSampler
-  target_positive_fraction: 0.20     # Target 20% positive samples per batch
+  target_positive_fraction: 0.40     # ⬆️ INCREASED from 0.20 to 0.40 (more exposure to failures)
 
   # Optimizer settings
   optimizer: "adamw"
@@ -59,14 +59,18 @@ training:
   warmup_epochs: 3        # Number of warmup epochs
   min_lr_ratio: 0.01      # Minimum LR as ratio of initial LR
 
-  # Early stopping
-  patience: 8                # Early stopping patience
+  # Early stopping (MORE AGGRESSIVE)
+  patience: 3                # ⬇️ REDUCED from 8 to 3 (stop before extreme overfitting)
+  min_delta: 0.01            # ✨ NEW: Minimum improvement threshold
   monitor_metric: "val_auprc"  # Metric to monitor (AUPRC best for imbalanced data)
   validation_split: 0.15     # 15% validation split
 
   # Loss configuration
   loss_type: "bce"           # Binary cross-entropy
-  label_smoothing: 0.05      # Label smoothing to prevent overconfidence
+  label_smoothing: 0.01      # ⬇️ REDUCED from 0.05 to 0.01 (preserve signal with few failures)
+
+  # Calibration (NEW)
+  use_calibration: true      # ✨ NEW: Enable probability calibration (isotonic regression)
 
 # Data Processing
 data:

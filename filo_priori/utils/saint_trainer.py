@@ -204,6 +204,7 @@ def train_saint(
     learning_rate = config.get('learning_rate', 5e-4)
     weight_decay = config.get('weight_decay', 0.01)
     patience = config.get('patience', 8)
+    min_delta = config.get('min_delta', 1e-4)  # NEW: minimum improvement threshold
     monitor_metric = config.get('monitor_metric', 'val_auprc')
     warmup_epochs = config.get('warmup_epochs', 3)
     min_lr_ratio = config.get('min_lr_ratio', 0.01)
@@ -242,7 +243,7 @@ def train_saint(
     )
 
     # Early stopping
-    early_stopping = EarlyStopping(patience=patience, mode='max')
+    early_stopping = EarlyStopping(patience=patience, min_delta=min_delta, mode='max')
 
     # Training history
     history = {
@@ -447,7 +448,7 @@ if __name__ == "__main__":
 
     # Create dummy data
     n_samples = 1000
-    n_features = 1028
+    n_features = 1024  # Semantic-only features
 
     X = np.random.randn(n_samples, n_features)
     y = np.random.randint(0, 2, n_samples)
