@@ -82,10 +82,10 @@ DEFAULT_CONFIG = {
         'num_continuous': 1024,  # ✨ CHANGED: 1024D (semantic only, no temporal)
         'num_categorical': 0,
         'categorical_dims': None,
-        'embedding_dim': 96,  # ⬇️ Reduced from 128 to 96 (less overfitting)
+        'embedding_dim': 1024,  # ✨ FULL BGE DIMENSION (no reduction, preserves full semantic information)
         'num_layers': 4,  # ⬇️ Reduced from 6 to 4 (simpler model)
         'num_heads': 8,
-        'mlp_hidden_dim': None,  # Default: 4 * embedding_dim
+        'mlp_hidden_dim': None,  # Default: 4 * embedding_dim (4096 now)
         'dropout': 0.3,  # ⬆️ Increased from 0.2 to 0.3 (stronger regularization)
         'use_intersample': True
     },

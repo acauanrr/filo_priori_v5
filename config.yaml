@@ -11,10 +11,10 @@ saint:
   num_continuous: 1024  # ✨ CHANGED: 1024D (semantic only, no temporal)
   num_categorical: 0    # Currently not using categorical features
   categorical_dims: null
-  embedding_dim: 96     # ⬇️ REDUCED from 128 to 96 (less overfitting)
+  embedding_dim: 1024   # ✨ FULL BGE DIMENSION (no reduction, preserves full semantic information)
   num_layers: 4         # ⬇️ REDUCED from 6 to 4 (simpler model, faster convergence)
-  num_heads: 8          # Multi-head attention heads
-  mlp_hidden_dim: null  # Default: 4 * embedding_dim (384 now)
+  num_heads: 8          # Multi-head attention heads (1024/8 = 128 per head)
+  mlp_hidden_dim: null  # Default: 4 * embedding_dim (4096 now)
   dropout: 0.3          # ⬆️ INCREASED from 0.1 to 0.3 (stronger regularization)
   use_intersample: true # Enable intersample attention (key SAINT feature)
 

@@ -468,9 +468,9 @@ if __name__ == "__main__":
     # Create model
     model = SAINT(
         num_continuous=n_features,
-        embedding_dim=128,
+        embedding_dim=1024,  # ✨ FULL BGE DIMENSION
         num_layers=2,  # Small for testing
-        num_heads=4,
+        num_heads=8,  # Changed from 4 to 8 (1024/8 = 128 per head)
         dropout=0.1
     )
 
