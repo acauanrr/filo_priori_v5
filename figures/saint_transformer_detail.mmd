@@ -1,0 +1,131 @@
+flowchart TB
+    subgraph TITLE["🧠 SAINT TRANSFORMER: Self-Attention and Intersample Attention Network"]
+        direction LR
+        Info["Specialized architecture for TABULAR data<br/>Combines self-attention (intra-sample) with intersample attention (inter-sample learning)"]
+        style Info fill:#9b59b6,stroke:#6c3483,stroke-width:3px,color:#fff
+    end
+
+    subgraph INPUT["📥 INPUT"]
+        direction TB
+        Continuous["Continuous Features<br/>1031D<br/>(BGE 1024D + Commit 7D)"]
+        Categorical["Categorical Features<br/>3D<br/>(CR_Resolution, Component, Type)"]
+
+        Continuous --> EmbedCont["Embedding Layer<br/>1031D → 1024D<br/>Linear projection"]
+        Categorical --> EmbedCat["Categorical Embedding<br/>3D → 1024D each<br/>Learned embeddings"]
+
+        EmbedCont --> Combined["Combined Embeddings<br/>1024D per feature"]
+        EmbedCat --> Combined
+
+        style EmbedCont fill:#3498db,stroke:#2874a6,stroke-width:2px,color:#fff
+    end
+
+    subgraph SAINT_BLOCK["🔄 SAINT BLOCK (x4 layers)"]
+        direction TB
+
+        subgraph SELF_ATT["1️⃣ SELF-ATTENTION (Intra-sample)"]
+            direction LR
+            SA_Input["Features within<br/>SAME sample"]
+            SA_Q["Query"]
+            SA_K["Key"]
+            SA_V["Value"]
+            SA_Attn["Multi-Head Attention<br/>8 heads × 128D"]
+            SA_Output["Feature interactions<br/>within sample"]
+
+            SA_Input --> SA_Q
+            SA_Input --> SA_K
+            SA_Input --> SA_V
+            SA_Q --> SA_Attn
+            SA_K --> SA_Attn
+            SA_V --> SA_Attn
+            SA_Attn --> SA_Output
+
+            style SA_Attn fill:#e67e22,stroke:#ca6f1e,stroke-width:2px,color:#fff
+        end
+
+        subgraph INTER_ATT["2️⃣ INTERSAMPLE ATTENTION (Inter-sample) 🌟"]
+            direction LR
+            IA_Input["Features from<br/>OTHER samples in batch"]
+            IA_Q["Query"]
+            IA_K["Key"]
+            IA_V["Value"]
+            IA_Attn["Multi-Head Attention<br/>8 heads × 128D<br/>🌟 UNIQUE TO SAINT"]
+            IA_Output["Cross-sample learning<br/>Regularization effect"]
+
+            IA_Input --> IA_Q
+            IA_Input --> IA_K
+            IA_Input --> IA_V
+            IA_Q --> IA_Attn
+            IA_K --> IA_Attn
+            IA_V --> IA_Attn
+            IA_Attn --> IA_Output
+
+            style IA_Attn fill:#e74c3c,stroke:#c0392b,stroke-width:3px,color:#fff
+            style IA_Output fill:#e74c3c,stroke:#c0392b,stroke-width:3px,color:#fff
+        end
+
+        subgraph FFN["3️⃣ FEED-FORWARD NETWORK"]
+            direction LR
+            FFN_Input["Combined<br/>representations"]
+            FFN_Layer1["Linear 1024D → 4096D<br/>GELU activation"]
+            FFN_Layer2["Linear 4096D → 1024D<br/>Dropout 0.3"]
+            FFN_Output["Refined features"]
+
+            FFN_Input --> FFN_Layer1 --> FFN_Layer2 --> FFN_Output
+
+            style FFN_Layer1 fill:#16a085,stroke:#138d75,stroke-width:2px,color:#fff
+        end
+
+        SELF_ATT --> INTER_ATT --> FFN
+    end
+
+    subgraph OUTPUT_HEAD["📤 CLASSIFICATION HEAD"]
+        direction LR
+        Final["Final representation<br/>1024D"]
+        Linear["Linear layer<br/>1024D → 1D"]
+        Sigmoid["Sigmoid activation<br/>→ Probability [0, 1]"]
+
+        Final --> Linear --> Sigmoid
+
+        style Sigmoid fill:#27ae60,stroke:#229954,stroke-width:2px,color:#fff
+    end
+
+    Combined --> SAINT_BLOCK
+    SAINT_BLOCK --> |"Repeat 4 times"| SAINT_BLOCK
+    SAINT_BLOCK --> OUTPUT_HEAD
+
+    subgraph WHY_SAINT["💡 WHY SAINT FOR TEST PRIORITIZATION?"]
+        direction TB
+
+        Why1["✅ Self-attention captures feature dependencies<br/>(e.g., commit size ↔ failure probability)"]
+        Why2["✅ Intersample attention learns from similar tests<br/>(e.g., tests with similar embeddings that failed)"]
+        Why3["✅ Better than MLP for high-dimensional tabular data<br/>(1031D features → rich interactions)"]
+        Why4["✅ Regularization through intersample learning<br/>(reduces overfitting on small failure set)"]
+        Why5["⚠️ Trade-off: 69.8M params vs 250K (MLP)<br/>(279x larger, 10x slower training)"]
+
+        style Why1 fill:#27ae60,stroke:#229954,stroke-width:2px,color:#fff
+        style Why2 fill:#27ae60,stroke:#229954,stroke-width:2px,color:#fff
+        style Why3 fill:#27ae60,stroke:#229954,stroke-width:2px,color:#fff
+        style Why4 fill:#27ae60,stroke:#229954,stroke-width:2px,color:#fff
+        style Why5 fill:#f39c12,stroke:#d68910,stroke-width:2px,color:#fff
+    end
+
+    subgraph PARAMS["📊 MODEL STATISTICS"]
+        direction TB
+
+        P1["Total Parameters: ~69,827,585"]
+        P2["4 SAINT blocks × (Self-Attn + Inter-Attn + FFN)"]
+        P3["8 attention heads per layer"]
+        P4["1024D embedding dimension (full BGE)"]
+        P5["4096D feed-forward hidden dimension"]
+        P6["Dropout: 0.3 (regularization)"]
+
+        style P1 fill:#9b59b6,stroke:#6c3483,stroke-width:2px,color:#fff
+        style P4 fill:#e74c3c,stroke:#c0392b,stroke-width:2px,color:#fff
+    end
+
+    subgraph INNOVATION["🌟 KEY INNOVATION"]
+        direction LR
+        InnovText["INTERSAMPLE ATTENTION allows the model to learn from<br/>OTHER samples in the batch, not just itself.<br/><br/>Example: When predicting if Test A will fail, SAINT looks at:<br/>  • Test A's own features (self-attention)<br/>  • Tests B, C, D with similar embeddings that failed (intersample attention)<br/><br/>This is like asking: 'What happened to similar tests in this build?'<br/>Provides implicit ensemble-like regularization."]
+
+        style InnovText fill:#e74c3c,stroke:#c0392b,stroke-width:4px,color:#fff
+    end

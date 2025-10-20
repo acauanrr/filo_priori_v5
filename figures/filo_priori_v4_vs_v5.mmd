@@ -1,0 +1,99 @@
+flowchart LR
+    subgraph V4["🔵 FILO-PRIORI V4<br/>(Baseline)"]
+        direction TB
+
+        V4_Embed["SBERT Embeddings<br/>all-mpnet-base-v2<br/>768D"]
+        V4_Reduce["PCA Reduction<br/>768D → 128D<br/>❌ Information Loss"]
+        V4_Temporal["Temporal Features<br/>4D (enabled)<br/>last_run, fail_count, etc."]
+        V4_Total["Total: 132D<br/>(128 + 4)"]
+
+        V4_Model["2-Layer MLP<br/>132 → 256 → 128 → 1<br/>~250K parameters"]
+
+        V4_Training["Training<br/>pos_weight=5.0<br/>20% positive sampling<br/>patience=8<br/>label_smoothing=0.05"]
+
+        V4_Calib["No Calibration<br/>❌"]
+
+        V4_Embed --> V4_Reduce
+        V4_Reduce --> V4_Total
+        V4_Temporal --> V4_Total
+        V4_Total --> V4_Model
+        V4_Model --> V4_Training
+        V4_Training --> V4_Calib
+
+        style V4_Reduce fill:#e74c3c,stroke:#c0392b,stroke-width:2px,color:#fff
+        style V4_Calib fill:#e74c3c,stroke:#c0392b,stroke-width:2px,color:#fff
+    end
+
+    subgraph V5["🟢 FILO-PRIORI V5<br/>(Current)"]
+        direction TB
+
+        V5_Embed["BGE-large Embeddings<br/>BAAI/bge-large-en-v1.5<br/>1024D<br/>✅ State-of-the-art"]
+        V5_NoReduce["NO PCA<br/>1024D preserved<br/>✅ Full semantic info"]
+        V5_Commit["Commit Features<br/>7D (enabled)<br/>n_msgs, n_apis, etc."]
+        V5_Cat["Categorical<br/>3D (enabled)<br/>CR_Resolution, etc."]
+        V5_TemporalOff["Temporal Features<br/>DISABLED<br/>⚠️ For experimentation"]
+        V5_Total["Total: 1034D<br/>(1024 + 7 + 3)"]
+
+        V5_Model["4-Layer SAINT<br/>Transformer<br/>1034 → 1024 embedding<br/>~69.8M parameters<br/>✅ Intersample attention"]
+
+        V5_Training["Aggressive Training<br/>pos_weight=15.0 ⬆️<br/>40% positive sampling ⬆️<br/>patience=3 ⬇️<br/>label_smoothing=0.01 ⬇️"]
+
+        V5_Calib["Isotonic Calibration<br/>✅ Better probabilities"]
+
+        V5_Embed --> V5_NoReduce
+        V5_NoReduce --> V5_Total
+        V5_Commit --> V5_Total
+        V5_Cat --> V5_Total
+        V5_TemporalOff -.->|disabled| V5_Total
+        V5_Total --> V5_Model
+        V5_Model --> V5_Training
+        V5_Training --> V5_Calib
+
+        style V5_Embed fill:#27ae60,stroke:#229954,stroke-width:3px,color:#fff
+        style V5_NoReduce fill:#27ae60,stroke:#229954,stroke-width:3px,color:#fff
+        style V5_Model fill:#27ae60,stroke:#229954,stroke-width:3px,color:#fff
+        style V5_Calib fill:#27ae60,stroke:#229954,stroke-width:3px,color:#fff
+        style V5_TemporalOff fill:#f39c12,stroke:#d68910,stroke-width:2px,color:#fff
+    end
+
+    V4 ==>|"UPGRADE"| V5
+
+    subgraph COMPARISON["📊 KEY DIFFERENCES"]
+        direction TB
+
+        Comp1["Embedding Model: SBERT → BGE-large (+33% dimensions)"]
+        Comp2["Dimensionality: 768D+PCA → 1024D native (no reduction)"]
+        Comp3["Model: 2-layer MLP → 4-layer SAINT Transformer"]
+        Comp4["Parameters: 250K → 69.8M (279x increase)"]
+        Comp5["Attention: None → Self + Intersample attention"]
+        Comp6["Calibration: None → Isotonic regression"]
+        Comp7["Class Imbalance: Moderate → Aggressive (pos_weight 5→15)"]
+        Comp8["Training Time: ~15-30min → ~5 hours (10x slower)"]
+
+        style Comp1 fill:#3498db,stroke:#2874a6,stroke-width:2px,color:#fff
+        style Comp2 fill:#3498db,stroke:#2874a6,stroke-width:2px,color:#fff
+        style Comp3 fill:#3498db,stroke:#2874a6,stroke-width:2px,color:#fff
+        style Comp4 fill:#3498db,stroke:#2874a6,stroke-width:2px,color:#fff
+        style Comp5 fill:#3498db,stroke:#2874a6,stroke-width:2px,color:#fff
+        style Comp6 fill:#3498db,stroke:#2874a6,stroke-width:2px,color:#fff
+        style Comp7 fill:#3498db,stroke:#2874a6,stroke-width:2px,color:#fff
+        style Comp8 fill:#3498db,stroke:#2874a6,stroke-width:2px,color:#fff
+    end
+
+    subgraph RESULTS["📈 EXECUTION 006 RESULTS"]
+        direction TB
+
+        R1["Mean APFD: 0.574 (target: 0.70) ❌"]
+        R2["AUPRC: 0.048 (target: 0.20) ❌"]
+        R3["Precision: 0.038 (target: 0.15) ❌"]
+        R4["Recall: 0.815 (target: 0.50) ✅"]
+        R5["Best Epoch: 2/30 (early overfitting)"]
+        R6["Discrimination: 1.34x (weak separation)"]
+
+        style R1 fill:#e74c3c,stroke:#c0392b,stroke-width:2px,color:#fff
+        style R2 fill:#e74c3c,stroke:#c0392b,stroke-width:2px,color:#fff
+        style R3 fill:#e74c3c,stroke:#c0392b,stroke-width:2px,color:#fff
+        style R4 fill:#27ae60,stroke:#229954,stroke-width:2px,color:#fff
+        style R5 fill:#f39c12,stroke:#d68910,stroke-width:2px,color:#fff
+        style R6 fill:#e74c3c,stroke:#c0392b,stroke-width:2px,color:#fff
+    end

@@ -1,0 +1,131 @@
+graph TB
+    subgraph HEADER["FILO-PRIORI V5: Test Prioritization with SAINT Transformer"]
+        Mission["🎯 MISSION: Predict test failures and rank tests to maximize early fault detection (APFD ≥ 0.70)"]
+        style Mission fill:#2c3e50,stroke:#1a252f,stroke-width:3px,color:#fff,font-size:16px
+    end
+
+    subgraph V5_CORE["🌟 V5 CORE ARCHITECTURE"]
+        direction LR
+
+        subgraph EMBED["Embeddings"]
+            E1["BGE-large-en-v1.5<br/>📊 1024D<br/>🚀 State-of-the-art<br/>✅ NO PCA"]
+            style E1 fill:#e74c3c,stroke:#c0392b,stroke-width:3px,color:#fff
+        end
+
+        subgraph SAINT["SAINT Model"]
+            S1["4 Transformer Layers<br/>📊 8 Attention Heads<br/>🧠 69.8M Parameters<br/>🌟 Intersample Attention"]
+            style S1 fill:#e74c3c,stroke:#c0392b,stroke-width:3px,color:#fff
+        end
+
+        subgraph CALIB["Calibration"]
+            C1["Isotonic Regression<br/>📊 Validation Set<br/>🎯 Better Probabilities"]
+            style C1 fill:#e74c3c,stroke:#c0392b,stroke-width:3px,color:#fff
+        end
+
+        EMBED --> SAINT --> CALIB
+    end
+
+    subgraph FEATURES_BOX["📦 FEATURES (1034D Total)"]
+        direction TB
+
+        Feat1["✅ Semantic: 1024D BGE embeddings"]
+        Feat2["✅ Commit: 7D (msgs, apis, issues, modules, packages, flags, errors)"]
+        Feat3["✅ Categorical: 3D (resolution, component, type)"]
+        Feat4["❌ Temporal: DISABLED (last_run, fail_count, avg_duration, frequency)"]
+
+        style Feat1 fill:#27ae60,stroke:#229954,stroke-width:2px,color:#fff
+        style Feat2 fill:#27ae60,stroke:#229954,stroke-width:2px,color:#fff
+        style Feat3 fill:#27ae60,stroke:#229954,stroke-width:2px,color:#fff
+        style Feat4 fill:#e74c3c,stroke:#c0392b,stroke-width:2px,color:#fff
+    end
+
+    subgraph TRAINING_BOX["⚙️ TRAINING STRATEGY"]
+        direction TB
+
+        Train1["🔥 Aggressive Class Imbalance"]
+        Train2["   • pos_weight = 15.0 (vs 5.0 in V4)"]
+        Train3["   • 40% positive sampling (vs 20% in V4)"]
+        Train4["⏱️ Early Stopping: patience=3, val_auprc"]
+        Train5["📉 Cosine LR: 3e-4, warmup=3, wd=0.1"]
+
+        style Train1 fill:#f39c12,stroke:#d68910,stroke-width:2px,color:#fff
+    end
+
+    subgraph RESULTS_BOX["📊 EXECUTION 006 RESULTS"]
+        direction LR
+
+        subgraph GOOD["✅ GOOD"]
+            G1["Recall: 0.815<br/>(target: 0.50)"]
+            style G1 fill:#27ae60,stroke:#229954,stroke-width:2px,color:#fff
+        end
+
+        subgraph BAD["❌ BELOW TARGET"]
+            B1["APFD: 0.574<br/>(target: 0.70)<br/>-18% gap"]
+            B2["AUPRC: 0.048<br/>(target: 0.20)<br/>-76% gap"]
+            B3["Precision: 0.038<br/>(target: 0.15)<br/>-75% gap"]
+
+            style B1 fill:#e74c3c,stroke:#c0392b,stroke-width:2px,color:#fff
+            style B2 fill:#e74c3c,stroke:#c0392b,stroke-width:2px,color:#fff
+            style B3 fill:#e74c3c,stroke:#c0392b,stroke-width:2px,color:#fff
+        end
+
+        subgraph WARNING["⚠️ ISSUES"]
+            W1["Best epoch: 2/30<br/>(early overfitting)"]
+            W2["Discrimination: 1.34x<br/>(weak separation)"]
+
+            style W1 fill:#f39c12,stroke:#d68910,stroke-width:2px,color:#fff
+            style W2 fill:#f39c12,stroke:#d68910,stroke-width:2px,color:#fff
+        end
+    end
+
+    subgraph VS_V4["📈 V4 → V5 COMPARISON"]
+        direction TB
+
+        Comp["
+        | Aspect | V4 | V5 | Change |
+        |--------|----|----|--------|
+        | Embeddings | SBERT 768D | BGE 1024D | +33% |
+        | PCA | Yes (→128D) | No (full 1024D) | ✅ Preserved |
+        | Model | 2-layer MLP | 4-layer SAINT | 🚀 Advanced |
+        | Parameters | 250K | 69.8M | 279x larger |
+        | Training | ~30 min | ~5 hours | 10x slower |
+        | Attention | None | Self + Inter | 🌟 Novel |
+        | Calibration | No | Isotonic | ✅ Added |
+        | pos_weight | 5.0 | 15.0 | 3x stronger |
+        "]
+
+        style Comp fill:#3498db,stroke:#2874a6,stroke-width:2px,color:#000,font-family:monospace
+    end
+
+    subgraph NEXT_STEPS["🔮 NEXT STEPS"]
+        direction TB
+
+        Step1["1. 🔄 Re-enable temporal features (test if improves APFD)"]
+        Step2["2. 📉 Reduce model size (try 512D embedding or 2 layers)"]
+        Step3["3. 📊 Feature importance analysis (understand what predicts failures)"]
+        Step4["4. 🎯 Threshold optimization (find best classification cutoff)"]
+        Step5["5. 🔍 Investigate early overfitting (why best epoch = 2?)"]
+
+        style Step1 fill:#9b59b6,stroke:#6c3483,stroke-width:2px,color:#fff
+        style Step2 fill:#9b59b6,stroke:#6c3483,stroke-width:2px,color:#fff
+        style Step3 fill:#9b59b6,stroke:#6c3483,stroke-width:2px,color:#fff
+        style Step4 fill:#9b59b6,stroke:#6c3483,stroke-width:2px,color:#fff
+        style Step5 fill:#9b59b6,stroke:#6c3483,stroke-width:2px,color:#fff
+    end
+
+    subgraph HYPOTHESIS["💡 CURRENT HYPOTHESIS"]
+        Hyp["Model is TOO LARGE (69.8M params) for TOO FEW failures (~1,654 train samples)<br/>
+        → Overfits quickly (epoch 2), then degrades<br/>
+        → Needs either: (a) more data, (b) smaller model, or (c) stronger regularization"]
+
+        style Hyp fill:#e67e22,stroke:#ca6f1e,stroke-width:3px,color:#fff,font-size:14px
+    end
+
+    subgraph STATUS["🚦 PROJECT STATUS"]
+        Stat["🔴 BELOW TARGET - Model needs improvement<br/>
+        Current: APFD=0.574, AUPRC=0.048<br/>
+        Dataset: 63,532 train samples, 28,859 test samples (277 builds)<br/>
+        Class imbalance: ~38:1 (pass:fail ratio)"]
+
+        style Stat fill:#e74c3c,stroke:#c0392b,stroke-width:3px,color:#fff,font-size:14px
+    end

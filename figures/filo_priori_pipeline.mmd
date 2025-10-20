@@ -1,41 +1,48 @@
 flowchart TD
-    Start([Start Experiment]) --> Step1[**STEP 1/7**<br/>Load & Parse Commits]
+    Start([Start Experiment]) --> Step1[**STEP 1/8**<br/>Load & Parse Commits]
 
     %% Step 1: Load and Parse Commits
-    Step1 --> FilterBuilds[Filter Valid Builds<br/>≥1 failure required]
-    FilterBuilds --> SplitData[Train/Val/Test Split<br/>85% / 15% / test]
+    Step1 --> LoadCSV[Load Train/Test CSV<br/>train.csv + test_full.csv]
+    LoadCSV --> ParseCommits[Parse Commit Data<br/>Remove duplicates<br/>Normalize labels]
 
     %% Step 2: Build Text Semantic
-    SplitData --> Step2[**STEP 2/7**<br/>Build Text Semantic]
+    ParseCommits --> Step2[**STEP 2/8**<br/>Build Text Semantic]
     Step2 --> ProcessText[Concatenate & Clean Text<br/>TE_Summary + TC_Steps]
 
-    %% Step 3: Generate BGE Embeddings (UPDATED)
-    ProcessText --> Step3[**STEP 3/7**<br/>Generate BGE Embeddings]
-    Step3 --> EmbedText[Encode with BGE-large<br/>BAAI/bge-large-en-v1.5]
+    %% Step 3: Generate BGE Embeddings
+    ProcessText --> Step3[**STEP 3/8**<br/>Generate BGE Embeddings]
+    Step3 --> EmbedText[Encode with BGE-large<br/>BAAI/bge-large-en-v1.5<br/>→ 1024D embeddings]
     EmbedText --> ScaleEmbed[Apply StandardScaler<br/>1024D → 1024D<br/>**NO PCA**]
 
     %% Step 4: Build Tabular Features
-    ScaleEmbed --> Step4[**STEP 4/7**<br/>Build Tabular Features]
-    Step4 --> BuildTemporal[Build Temporal Features<br/>4 features:<br/>last_run, fail_count,<br/>avg_duration, run_frequency]
-    BuildTemporal --> ConcatFeatures[Concatenate:<br/>BGE 1024D + Temporal 4D<br/>= 1028D total]
+    ScaleEmbed --> Step4[**STEP 4/8**<br/>Build Tabular Features]
+    Step4 --> BuildCommit[Build Commit Features<br/>7 numerical features:<br/>n_msgs, n_apis, n_issues,<br/>n_modules, n_packages,<br/>n_flags, n_errors]
+    BuildCommit --> BuildCategorical[Encode Categorical Features<br/>3 features:<br/>CR_Resolution,<br/>CR_Component_Name,<br/>CR_Type]
+    BuildCategorical --> ConcatFeatures[Concatenate Features:<br/>BGE 1024D + Commit 7D<br/>= **1031D continuous**<br/>+ **3D categorical**<br/>**NO temporal features**]
 
-    %% Step 5: Train SAINT Transformer (UPDATED)
-    ConcatFeatures --> Step5[**STEP 5/7**<br/>Train SAINT Transformer]
-    Step5 --> InitModel[Initialize SAINT Model<br/>6 layers, 8 heads<br/>Embedding: 128D<br/>Intersample Attention: ON<br/>~1.86M parameters]
-    InitModel --> TrainLoop[Training Loop<br/>BCE Loss + pos_weight=5<br/>AdamW optimizer<br/>Cosine LR schedule<br/>Early Stopping patience=8]
+    %% Step 5: Split & Prepare Data
+    ConcatFeatures --> Step5[**STEP 5/8**<br/>Split & Prepare Data]
+    Step5 --> SplitData[Train/Val Split<br/>85% / 15%<br/>stratified by label]
+    SplitData --> BalanceSampler[Create Balanced Sampler<br/>Target 40% positive samples<br/>WeightedRandomSampler]
+
+    %% Step 6: Train SAINT Transformer
+    BalanceSampler --> Step6[**STEP 6/8**<br/>Train SAINT Transformer]
+    Step6 --> InitModel[Initialize SAINT Model<br/>4 layers, 8 heads<br/>Embedding: **1024D**<br/>Intersample Attention: ON<br/>**~69.8M parameters**]
+    InitModel --> TrainLoop[Training Loop<br/>BCE Loss + pos_weight=**15.0**<br/>AdamW optimizer<br/>Cosine LR schedule<br/>Early Stopping patience=**3**]
     TrainLoop --> LoadBestModel[Load Best Model<br/>based on Val AUPRC]
 
-    %% Step 6: Evaluate Model
-    LoadBestModel --> Step6[**STEP 6/7**<br/>Evaluate Model]
-    Step6 --> Predict[Generate Predictions<br/>Test builds]
-    Predict --> CalcRanksPERBUILD[**Calculate Ranks PER BUILD**<br/>groupby Build_ID]
-    CalcRanksPERBUILD --> CalcMetrics[Calculate Metrics<br/>Precision, Recall, AUPRC,<br/>F1, Accuracy]
-    CalcMetrics --> CalcAPFDPerBuild[Calculate APFD Per Build<br/>with Business Rules]
+    %% Step 7: Calibrate & Evaluate
+    LoadBestModel --> Step7[**STEP 7/8**<br/>Calibrate & Evaluate]
+    Step7 --> Calibrate[**Calibrate Probabilities**<br/>Isotonic Regression<br/>on Validation Set]
+    Calibrate --> Predict[Generate Predictions<br/>Apply calibration to test set]
+    Predict --> CalcRanksPERBUILD[**Calculate Ranks PER BUILD**<br/>groupby Build_ID<br/>rank by probability desc]
+    CalcRanksPERBUILD --> CalcMetrics[Calculate Classification Metrics<br/>AUPRC, Precision, Recall,<br/>F1, Accuracy, AUC]
+    CalcMetrics --> CalcAPFDPerBuild[Calculate APFD Per Build<br/>Measure early fault detection]
     CalcAPFDPerBuild --> AggregateAPFD[Aggregate APFD Stats<br/>Mean, Median, Distribution]
 
-    %% Step 7: Save Results
-    AggregateAPFD --> Step7[**STEP 7/7**<br/>Save Results]
-    Step7 --> SaveOutputs[Save Outputs:<br/>• metrics.json<br/>• best_model.pth<br/>• training_history.json<br/>• prioritized_hybrid.csv<br/>• apfd_per_build.csv<br/>• summary.txt]
+    %% Step 8: Save Results
+    AggregateAPFD --> Step8[**STEP 8/8**<br/>Save Results]
+    Step8 --> SaveOutputs[Save Outputs:<br/>• metrics.json<br/>• best_model.pth<br/>• training_history.json<br/>• prioritized_hybrid.csv<br/>• apfd_per_build.csv<br/>• summary.txt<br/>• calibrator.pkl<br/>• feature_builder.pkl<br/>• embedder/scaler.pkl]
     SaveOutputs --> End([Experiment Complete])
 
     %% Styling
@@ -45,7 +52,7 @@ flowchart TD
     classDef criticalClass fill:#9B59B6,stroke:#6C3483,stroke-width:3px,color:#fff
     classDef newClass fill:#E74C3C,stroke:#C0392B,stroke-width:3px,color:#fff
 
-    class Step1,Step2,Step3,Step4,Step5,Step6,Step7 stepClass
-    class FilterBuilds,SplitData,Predict,SaveOutputs dataClass
-    class ProcessText,EmbedText,ScaleEmbed,BuildTemporal,ConcatFeatures,InitModel,TrainLoop,LoadBestModel,CalcMetrics processClass
-    class CalcRanksPERBUILD,CalcAPFDPerBuild,AggregateAPFD criticalClass
+    class Step1,Step2,Step3,Step4,Step5,Step6,Step7,Step8 stepClass
+    class LoadCSV,ParseCommits,SplitData,BalanceSampler,SaveOutputs dataClass
+    class ProcessText,EmbedText,ScaleEmbed,BuildCommit,BuildCategorical,ConcatFeatures,InitModel,TrainLoop,LoadBestModel,Predict,CalcMetrics processClass
+    class Calibrate,CalcRanksPERBUILD,CalcAPFDPerBuild,AggregateAPFD criticalClass

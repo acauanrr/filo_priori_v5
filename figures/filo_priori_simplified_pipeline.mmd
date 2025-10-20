@@ -1,0 +1,99 @@
+flowchart LR
+    subgraph INPUT["📥 INPUT"]
+        Tests["Test Cases<br/>TE_Summary<br/>TC_Steps<br/>Commit Data<br/>Change Requests"]
+    end
+
+    subgraph FEATURE["🔧 FEATURES (1034D)"]
+        direction TB
+
+        F1["🌟 BGE-large Embeddings<br/>1024D<br/>NO PCA<br/>Full semantic preserved"]
+        F2["Commit Features<br/>7D numerical"]
+        F3["Categorical<br/>3D encoded"]
+        F4["⚠️ Temporal OFF<br/>(disabled)"]
+
+        style F1 fill:#e74c3c,stroke:#c0392b,stroke-width:3px,color:#fff
+        style F4 fill:#95a5a6,stroke:#7f8c8d,stroke-width:1px,color:#fff
+    end
+
+    subgraph MODEL["🧠 SAINT TRANSFORMER"]
+        direction TB
+
+        M1["Embedding: 1034D → 1024D<br/>🌟 Full BGE dimension"]
+        M2["4 SAINT Blocks<br/>Self-Attention<br/>+<br/>🌟 Intersample Attention"]
+        M3["Output: 1D probability<br/>~69.8M parameters"]
+
+        M1 --> M2 --> M3
+
+        style M1 fill:#e74c3c,stroke:#c0392b,stroke-width:2px,color:#fff
+        style M2 fill:#e74c3c,stroke:#c0392b,stroke-width:3px,color:#fff
+    end
+
+    subgraph TRAIN["⚙️ TRAINING"]
+        direction TB
+
+        T1["🌟 Aggressive Imbalance<br/>pos_weight=15.0<br/>40% positive sampling"]
+        T2["Early Stopping<br/>patience=3<br/>monitor: val_auprc"]
+        T3["Cosine LR + Warmup<br/>lr=3e-4, wd=0.1"]
+
+        style T1 fill:#e74c3c,stroke:#c0392b,stroke-width:3px,color:#fff
+    end
+
+    subgraph CALIB["🎯 CALIBRATION"]
+        C1["🌟 Isotonic Regression<br/>Fit on validation set<br/>Improves probability reliability"]
+
+        style C1 fill:#e74c3c,stroke:#c0392b,stroke-width:3px,color:#fff
+    end
+
+    subgraph OUTPUT["📤 OUTPUT"]
+        O1["Test Rankings<br/>Per Build<br/>Ranked by calibrated<br/>failure probability"]
+        O2["APFD Metrics<br/>Early fault detection<br/>Per-build analysis"]
+    end
+
+    Tests --> FEATURE
+    FEATURE --> MODEL
+    MODEL --> TRAIN
+    TRAIN --> CALIB
+    CALIB --> OUTPUT
+
+    subgraph INNOVATIONS["🌟 V5 KEY INNOVATIONS"]
+        direction TB
+
+        I1["1. BGE-large (1024D) vs SBERT (768D)"]
+        I2["2. NO PCA - Full embeddings preserved"]
+        I3["3. SAINT with intersample attention"]
+        I4["4. Full 1024D embedding dimension"]
+        I5["5. Probability calibration"]
+        I6["6. Aggressive class imbalance handling"]
+        I7["7. 279x more parameters (69.8M vs 250K)"]
+
+        style I1 fill:#27ae60,stroke:#229954,stroke-width:2px,color:#fff
+        style I2 fill:#27ae60,stroke:#229954,stroke-width:2px,color:#fff
+        style I3 fill:#27ae60,stroke:#229954,stroke-width:2px,color:#fff
+        style I4 fill:#27ae60,stroke:#229954,stroke-width:2px,color:#fff
+        style I5 fill:#27ae60,stroke:#229954,stroke-width:2px,color:#fff
+        style I6 fill:#27ae60,stroke:#229954,stroke-width:2px,color:#fff
+        style I7 fill:#27ae60,stroke:#229954,stroke-width:2px,color:#fff
+    end
+
+    subgraph CHALLENGES["⚠️ CURRENT CHALLENGES"]
+        direction TB
+
+        CH1["Mean APFD: 0.574 (target: 0.70) -18%"]
+        CH2["Early overfitting: best epoch 2/30"]
+        CH3["Weak discrimination: 1.34x"]
+        CH4["Model too large? 69.8M params for 1,654 failures"]
+        CH5["Missing temporal signal? (disabled features)"]
+
+        style CH1 fill:#e74c3c,stroke:#c0392b,stroke-width:2px,color:#fff
+        style CH2 fill:#f39c12,stroke:#d68910,stroke-width:2px,color:#fff
+        style CH3 fill:#e74c3c,stroke:#c0392b,stroke-width:2px,color:#fff
+        style CH4 fill:#f39c12,stroke:#d68910,stroke-width:2px,color:#fff
+        style CH5 fill:#f39c12,stroke:#d68910,stroke-width:2px,color:#fff
+    end
+
+    %% Annotations
+    Note1["🌟 = New in V5"]
+    Note2["⚠️ = Attention needed"]
+
+    style Note1 fill:#e74c3c,stroke:#c0392b,stroke-width:2px,color:#fff
+    style Note2 fill:#f39c12,stroke:#d68910,stroke-width:2px,color:#fff

@@ -1,0 +1,117 @@
+flowchart TB
+    subgraph INPUT["📥 INPUT DATA"]
+        TestData["Test Cases<br/>TE_Summary + TC_Steps<br/>+ Commit Metadata<br/>+ Change Request Info"]
+    end
+
+    subgraph FEATURES["🔧 FEATURE ENGINEERING"]
+        direction TB
+
+        subgraph SEMANTIC["Semantic Features (1024D)"]
+            BGE["🌟 BGE-large-en-v1.5<br/>State-of-the-art embeddings<br/>NO PCA - Full 1024D preserved"]
+            style BGE fill:#E74C3C,stroke:#C0392B,stroke-width:3px,color:#fff
+        end
+
+        subgraph TABULAR["Tabular Features (10D)"]
+            Commit["Commit Features (7D)<br/>n_msgs, n_apis, n_issues,<br/>n_modules, n_packages,<br/>n_flags, n_errors"]
+            Categorical["Categorical (3D)<br/>CR_Resolution,<br/>CR_Component_Name,<br/>CR_Type"]
+        end
+
+        subgraph DISABLED["⚠️ DISABLED"]
+            Temporal["Temporal Features<br/>(Currently OFF)<br/>last_run, fail_count,<br/>avg_duration, run_frequency"]
+            style Temporal fill:#95a5a6,stroke:#7f8c8d,stroke-width:2px,color:#fff
+        end
+    end
+
+    subgraph MODEL["🧠 SAINT TRANSFORMER ARCHITECTURE"]
+        direction TB
+
+        InputEmbed["Input Layer<br/>1031D continuous + 3D categorical"]
+
+        Embedding["Embedding Layer<br/>1031D → 1024D<br/>🌟 FULL BGE DIMENSION<br/>(No reduction!)"]
+        style Embedding fill:#E74C3C,stroke:#C0392B,stroke-width:3px,color:#fff
+
+        subgraph SAINT_BLOCKS["4x SAINT Blocks"]
+            direction LR
+            Block1["Block 1<br/>Self-Attention<br/>+<br/>Intersample Attention"]
+            Block2["Block 2"]
+            Block3["Block 3"]
+            Block4["Block 4"]
+            Block1 --> Block2 --> Block3 --> Block4
+        end
+
+        Classifier["Classification Head<br/>1024D → 1D<br/>Sigmoid Output"]
+
+        ModelSize["📊 Model Stats<br/>~69.8M parameters<br/>4 layers × 8 heads<br/>1024D × 8 = 128D per head"]
+        style ModelSize fill:#9B59B6,stroke:#6C3483,stroke-width:2px,color:#fff
+
+        InputEmbed --> Embedding --> SAINT_BLOCKS --> Classifier
+    end
+
+    subgraph TRAINING["⚙️ TRAINING STRATEGY"]
+        direction TB
+
+        subgraph IMBALANCE["Class Imbalance Handling"]
+            PosWeight["BCE Loss<br/>pos_weight = 15.0<br/>🌟 Aggressive failure focus"]
+            Sampler["WeightedRandomSampler<br/>Target 40% positive/batch<br/>🌟 High exposure to failures"]
+            LabelSmooth["Label Smoothing = 0.01<br/>Preserve signal with few failures"]
+            style PosWeight fill:#E74C3C,stroke:#C0392B,stroke-width:2px,color:#fff
+            style Sampler fill:#E74C3C,stroke:#C0392B,stroke-width:2px,color:#fff
+        end
+
+        subgraph OPTIMIZATION["Optimization"]
+            AdamW["AdamW Optimizer<br/>LR = 3e-4<br/>Weight Decay = 0.1"]
+            Schedule["Cosine LR Schedule<br/>Warmup: 3 epochs<br/>Min LR ratio: 0.01"]
+            EarlyStopping["Early Stopping<br/>Patience = 3<br/>Monitor: val_auprc<br/>Min delta = 0.01"]
+        end
+    end
+
+    subgraph CALIBRATION["🎯 PROBABILITY CALIBRATION"]
+        direction LR
+        RawProb["Raw Probabilities<br/>from SAINT"]
+        Isotonic["🌟 Isotonic Regression<br/>Fit on Validation Set<br/>Improves reliability"]
+        CalibProb["Calibrated Probabilities<br/>Better APFD optimization"]
+
+        RawProb --> Isotonic --> CalibProb
+        style Isotonic fill:#E74C3C,stroke:#C0392B,stroke-width:3px,color:#fff
+    end
+
+    subgraph OUTPUT["📤 OUTPUT"]
+        direction TB
+        Ranking["Test Case Ranking<br/>Per Build<br/>Probability-based + Hybrid"]
+        Metrics["APFD Metrics<br/>Early Fault Detection<br/>Per-build analysis"]
+    end
+
+    %% Main flow
+    TestData --> FEATURES
+    SEMANTIC --> InputEmbed
+    TABULAR --> InputEmbed
+
+    MODEL --> CALIBRATION
+    CALIBRATION --> OUTPUT
+
+    %% Annotations
+    subgraph LEGEND["🌟 KEY INNOVATIONS IN V5"]
+        direction TB
+        Innov1["✓ BGE-large embeddings (1024D vs 768D SBERT)"]
+        Innov2["✓ SAINT Transformer (vs simple MLP)"]
+        Innov3["✓ Full 1024D embedding (vs 128D reduction)"]
+        Innov4["✓ Intersample attention mechanism"]
+        Innov5["✓ Probability calibration (isotonic regression)"]
+        Innov6["✓ Aggressive class imbalance handling"]
+        Innov7["✓ 69.8M parameters (279x larger than V4)"]
+
+        style Innov1 fill:#27ae60,stroke:#229954,stroke-width:2px,color:#fff
+        style Innov2 fill:#27ae60,stroke:#229954,stroke-width:2px,color:#fff
+        style Innov3 fill:#27ae60,stroke:#229954,stroke-width:2px,color:#fff
+        style Innov4 fill:#27ae60,stroke:#229954,stroke-width:2px,color:#fff
+        style Innov5 fill:#27ae60,stroke:#229954,stroke-width:2px,color:#fff
+        style Innov6 fill:#27ae60,stroke:#229954,stroke-width:2px,color:#fff
+        style Innov7 fill:#27ae60,stroke:#229954,stroke-width:2px,color:#fff
+    end
+
+    %% Styling
+    classDef highlightClass fill:#E74C3C,stroke:#C0392B,stroke-width:3px,color:#fff
+    classDef processClass fill:#3498DB,stroke:#2874A6,stroke-width:2px,color:#fff
+    classDef successClass fill:#27ae60,stroke:#229954,stroke-width:2px,color:#fff
+
+    class BGE,Embedding,PosWeight,Sampler,Isotonic highlightClass
